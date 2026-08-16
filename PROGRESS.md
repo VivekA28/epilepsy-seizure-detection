@@ -9,7 +9,7 @@ Running log of what's done and what's next. Update this as the project moves —
 - [x] `.gitignore` in place — excludes `data/`, `models/`, `*.edf`, `*.pt`, `*.h5`, `*.pth`, `__pycache__/`, `venv/`, etc.
 - [x] `README.md` added with attribution note (base implementation adapted from `mkfzdmr/Epileptic-EEG-Classification-Using-Deep-Learning`, our contribution is the SHAP/LIME explainability layer)
 - [x] SSH key auth set up for Vivek (Arch) — push/pull working with no password prompts
-- [x] SSH key auth set up for teammate (Windows/Git Bash) — in progress, hit a PATH issue with AWS CLI in Git Bash, resolved by reopening Git Bash / manually appending to PATH
+- [x] SSH key auth set up for Aishwary (Windows/Git Bash) — in progress, hit a PATH issue with AWS CLI in Git Bash, resolved by reopening Git Bash / manually appending to PATH
 - [x] `scripts/download_data.sh` written — wget-based download script (works, but slow against physionet.org directly, ~40-50 KB/s)
 - [x] Found and switched to a faster download path: PhysioNet's public S3 mirror via `aws s3 sync --no-sign-request s3://physionet-open/chbmit/1.0.0/<subject>/ data/raw/<subject>/`
 - [x] chb01 dataset downloaded (Vivek's machine)
@@ -30,6 +30,6 @@ Running log of what's done and what's next. Update this as the project moves —
 
 ## Team notes
 
-- Two people on this project — Vivek (Arch Linux) and teammate (Windows, Git Bash)
-- Working style: pair-programming, Vivek driving initially, teammate to take over parts of the CLI/Git work as he gets comfortable
+- Two people on this project — Vivek (Arch Linux) and Aishwary (Windows, Git Bash)
+- Working style: pair-programming, Vivek driving initially, Aishwary to take over parts of the CLI/Git work as he gets comfortable
 - Consider a branch-per-feature + PR workflow instead of both pushing directly to `main`, once active development starts

@@ -6,7 +6,6 @@ as the novel contribution.
 
 ## Attribution
 Base implementation adapted from: https://github.com/mkfzdmr/Epileptic-EEG-Classfication-Using-Deep-Learning
-Our contribution: SHAP/LIME explainability layer (see src/explainability.py)
 
 ## Dataset
 CHB-MIT: https://physionet.org/content/chbmit/1.0.0/

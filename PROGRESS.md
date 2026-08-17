@@ -16,8 +16,7 @@ Running log of what's done and what's next. Update this as the project moves —
 
 ## In progress
 
-- [ ] chb01 dataset download on teammate's machine
-- [ ] Decide which subjects both of you will use (just chb01, or split subjects to cover more ground)
+- [x] chb01 dataset download on teammate's machine
 
 ## Next up
 

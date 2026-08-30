@@ -20,7 +20,7 @@ Running log of what's done and what's next. Update this as the project moves —
 
 ## Next up
 
-- [ ] `mne` walkthrough: load an EDF file, inspect channels/sampling rate, plot signal, parse seizure onset/offset from `chbXX-summary.txt`
+- [x] `mne` walkthrough: load an EDF file, inspect channels/sampling rate, plot signal, parse seizure onset/offset from `chbXX-summary.txt`
 - [ ] Data preprocessing pipeline (`src/preprocessing.py`)
 - [ ] Baseline model (CNN/LSTM, adapted from base repo)
 - [ ] SHAP/LIME explainability layer (`src/explainability.py`) — this is the core original contribution

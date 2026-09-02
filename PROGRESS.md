@@ -13,16 +13,10 @@ Running log of what's done and what's next. Update this as the project moves —
 - [x] `scripts/download_data.sh` written — wget-based download script (works, but slow against physionet.org directly, ~40-50 KB/s)
 - [x] Found and switched to a faster download path: PhysioNet's public S3 mirror via `aws s3 sync --no-sign-request s3://physionet-open/chbmit/1.0.0/<subject>/ data/raw/<subject>/`
 - [x] chb01 dataset downloaded (Vivek's machine)
-
-## In progress
-
 - [x] chb01 dataset download on teammate's machine
-
-## Next up
-
-- [x] `mne` walkthrough: load an EDF file, inspect channels/sampling rate, plot signal, parse seizure onset/offset from `chbXX-summary.txt`
-- [x] Data preprocessing pipeline (`src/preprocessing.py`)
+## In progress
 - [ ] Baseline model (CNN/LSTM, adapted from base repo)
+## Next up
 - [ ] SHAP/LIME explainability layer (`src/explainability.py`) — this is the core original contribution
 - [ ] Decide on train/test split strategy (per-subject vs pooled)
 - [ ] Write up results and evaluation metrics

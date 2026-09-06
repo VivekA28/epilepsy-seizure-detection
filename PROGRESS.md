@@ -14,11 +14,6 @@ Running log of what's done and what's next. Update this as the project moves —
 - [x] Found and switched to a faster download path: PhysioNet's public S3 mirror via `aws s3 sync --no-sign-request s3://physionet-open/chbmit/1.0.0/<subject>/ data/raw/<subject>/`
 - [x] chb01 dataset downloaded (Vivek's machine)
 - [x] chb01 dataset download on teammate's machine
-<<<<<<< HEAD
-## In progress
-- [ ] Baseline model (CNN/LSTM, adapted from base repo)
-## Next up
-=======
 - [x] `mne` walkthrough: load an EDF file, inspect channels/sampling rate, plot signal, parse seizure onset/offset from `chbXX-summary.txt`
 - [x] Data preprocessing pipeline (`src/preprocessing.py`)
 - [x] Processed all 42 files for chb01 (memory-safe pipeline: resampled to 128Hz, float32, per-file streaming to avoid RAM crash) → 72,951 windows, 230 seizure (0.32%)
@@ -27,9 +22,8 @@ Running log of what's done and what's next. Update this as the project moves —
 
 - [ ] Baseline model (CNN/LSTM, adapted from base repo)
 
-## In progress
+## Next up
 
->>>>>>> 8189127 (Process full chb01 dataset with memory-safe pipeline)
 - [ ] SHAP/LIME explainability layer (`src/explainability.py`) — this is the core original contribution
 - [ ] Decide on train/test split strategy (per-subject vs pooled)
 - [ ] Write up results and evaluation metrics

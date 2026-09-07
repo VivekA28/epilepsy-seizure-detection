@@ -28,8 +28,9 @@ from torch.utils.data import TensorDataset, DataLoader
 # ---------------------------------------------------------------------
 SUBJECT = sys.argv[1] if len(sys.argv) > 1 else "chb01"
 DATA_DIR = Path("data/processed")
-windows = np.load(DATA_DIR / f"{SUBJECT}_windows.npy")   # shape: (n_windows, 23, 512)
-labels = np.load(DATA_DIR / f"{SUBJECT}_labels.npy")      # shape: (n_windows,)
+windows = np.load(DATA_DIR / f"{SUBJECT}_windows.npy")     # shape: (n_windows, 23, 512)
+labels = np.load(DATA_DIR / f"{SUBJECT}_labels.npy")       # shape: (n_windows,)
+file_ids = np.load(DATA_DIR / f"{SUBJECT}_file_ids.npy")   # shape: (n_windows,) - which source file each window came from
 
 print(f"Loaded {windows.shape[0]} windows, shape per window: {windows.shape[1:]}")
 print(f"Seizure windows: {labels.sum()} / {len(labels)} ({100 * labels.mean():.2f}%)")
@@ -40,20 +41,33 @@ X = windows.astype(np.float32)
 y = labels.astype(np.float32)
 
 # ---------------------------------------------------------------------
-# 2. Train/test split
+# 2. Train/test split - BY FILE, not by individual window
 # ---------------------------------------------------------------------
-# Splitting the actual 3D window arrays directly through sklearn's
-# train_test_split is slow, since sklearn's indexing isn't optimized for
-# 3D arrays. Instead, split just the indices (fast, since that's just
-# numbers), then use plain NumPy indexing to build the real arrays -
-# much faster for this shape of data.
-indices = np.arange(len(X))
-train_idx, test_idx = train_test_split(
-    indices, test_size=0.2, random_state=42, stratify=y
+# Windows overlap by 50%, so a window and its neighbor share half their
+# actual signal - splitting randomly by individual window would let
+# near-duplicate windows end up on both sides of the split, letting the
+# model effectively see the test set during training (data leakage) and
+# producing an inflated, unrealistic performance score. Splitting by
+# whole file instead means test windows come from recordings the model
+# never saw any part of during training.
+unique_files = np.unique(file_ids)
+
+# A file is treated as a "seizure file" for stratification purposes if
+# any of its windows are labeled seizure - keeps seizure-containing
+# files reasonably spread across both the train and test splits.
+file_has_seizure = np.array([
+    labels[file_ids == f].max() for f in unique_files
+])
+
+train_files, test_files = train_test_split(
+    unique_files, test_size=0.25, random_state=42, stratify=file_has_seizure
 )
 
-X_train, X_test = X[train_idx], X[test_idx]
-y_train, y_test = y[train_idx], y[test_idx]
+train_mask = np.isin(file_ids, train_files)
+test_mask = np.isin(file_ids, test_files)
+
+X_train, X_test = X[train_mask], X[test_mask]
+y_train, y_test = y[train_mask], y[test_mask]
 
 print(f"\nTrain set: {X_train.shape[0]} windows ({int(y_train.sum())} seizure)")
 print(f"Test set:  {X_test.shape[0]} windows ({int(y_test.sum())} seizure)")

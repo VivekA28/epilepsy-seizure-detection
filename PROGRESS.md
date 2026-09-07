@@ -17,10 +17,10 @@ Running log of what's done and what's next. Update this as the project moves —
 - [x] `mne` walkthrough: load an EDF file, inspect channels/sampling rate, plot signal, parse seizure onset/offset from `chbXX-summary.txt`
 - [x] Data preprocessing pipeline (`src/preprocessing.py`)
 - [x] Processed all 42 files for chb01 (memory-safe pipeline: resampled to 128Hz, float32, per-file streaming to avoid RAM crash) → 72,951 windows, 230 seizure (0.32%)
+- [x] Fixed data leakage: added file-level tracking to preprocessing, switched train/test split to be by-file rather than by-window
+- [x] Retrained baseline CNN with leak-free split: F1=0.97, precision=0.99, recall=0.96 on chb01 (test set: 18,682 windows, 100 seizure, from held-out files)
 
 ## In progress
-
-- [ ] Baseline model (CNN/LSTM, adapted from base repo)
 
 ## Next up
 

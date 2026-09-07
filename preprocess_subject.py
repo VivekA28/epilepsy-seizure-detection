@@ -125,7 +125,11 @@ for i, edf_file in enumerate(edf_files, 1):
         seizure_times = parse_seizures_for_file(SUMMARY_FILE, edf_file.name)
         windows, labels = make_windows(data, sfreq, WINDOW_SEC, WINDOW_OVERLAP, seizure_times)
 
-        # Save this file's windows/labels to a temp folder right away
+        # Save this file's windows/labels to a temp folder right away,
+        # along with which source file they came from - needed later so
+        # train/test splitting can be done by file rather than by
+        # individual window (avoids leaking near-duplicate overlapping
+        # windows across the train/test boundary)
         w_path = TMP_DIR / f"{edf_file.stem}_windows.npy"
         l_path = TMP_DIR / f"{edf_file.stem}_labels.npy"
         np.save(w_path, windows)
@@ -176,21 +180,31 @@ final_windows = np.lib.format.open_memmap(
     shape=(total_windows, *sample_shape)
 )
 final_labels = np.zeros(total_windows, dtype=np.int8)
+# Tracks which source file each window came from (as an integer index
+# into saved_chunks) - used later to split train/test by file rather
+# than by individual window, which would otherwise leak near-duplicate
+# overlapping windows across the split.
+final_file_ids = np.zeros(total_windows, dtype=np.int32)
 
 # Second pass: copy each file's chunk into its slot in the final array
 offset = 0
-for stem in saved_chunks:
+for file_idx, stem in enumerate(saved_chunks):
     w = np.load(TMP_DIR / f"{stem}_windows.npy")
     l = np.load(TMP_DIR / f"{stem}_labels.npy")
     n = w.shape[0]
     final_windows[offset:offset + n] = w
     final_labels[offset:offset + n] = l
+    final_file_ids[offset:offset + n] = file_idx
     offset += n
     del w, l
     gc.collect()
 
 final_windows.flush()  # ensure everything written to the memmap hits disk
 np.save(final_labels_path, final_labels)
+np.save(OUT_DIR / f"{SUBJECT}_file_ids.npy", final_file_ids)
+# also save which filename each file_id corresponds to, for reference
+with open(OUT_DIR / f"{SUBJECT}_file_names.txt", "w") as f:
+    f.write("\n".join(saved_chunks))
 
 # ---------------------------------------------------------------------
 # Clean up temp per-file chunks
@@ -207,4 +221,4 @@ print(f"Total windows: {total_windows}")
 print(f"Seizure windows: {final_labels.sum()} / {total_windows} "
       f"({100 * final_labels.mean():.2f}%)")
 print(f"\nSaved to {final_windows_path}")
-print(f"Saved to {final_labels_path}") 
+print(f"Saved to {final_labels_path}")

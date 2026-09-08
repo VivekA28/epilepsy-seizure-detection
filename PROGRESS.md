@@ -10,7 +10,7 @@ Running log of what's done and what's next. Update this as the project moves —
 - [x] `README.md` added with attribution note (base implementation adapted from `mkfzdmr/Epileptic-EEG-Classification-Using-Deep-Learning`, our contribution is the SHAP/LIME explainability layer)
 - [x] SSH key auth set up for Vivek (Arch) — push/pull working with no password prompts
 - [x] SSH key auth set up for Aishwary (Windows/Git Bash) — in progress, hit a PATH issue with AWS CLI in Git Bash, resolved by reopening Git Bash / manually appending to PATH
-- [x] `scripts/download_data.sh` written — wget-based download script (works, but slow against physionet.org directly, ~40-50 KB/s)
+- [x] `scripts/download_data.sh` written — wget-based download script (works, but slow against physionet.org directly, ~40–50 KB/s)
 - [x] Found and switched to a faster download path: PhysioNet's public S3 mirror via `aws s3 sync --no-sign-request s3://physionet-open/chbmit/1.0.0/<subject>/ data/raw/<subject>/`
 - [x] chb01 dataset downloaded (Vivek's machine)
 - [x] chb01 dataset download on teammate's machine
@@ -19,7 +19,7 @@ Running log of what's done and what's next. Update this as the project moves —
 - [x] Processed all 42 files for chb01 (memory-safe pipeline: resampled to 128Hz, float32, per-file streaming to avoid RAM crash) → 72,951 windows, 230 seizure (0.32%)
 - [x] Fixed data leakage: added file-level tracking to preprocessing, switched train/test split to be by-file rather than by-window
 - [x] Retrained baseline CNN with leak-free split: F1=0.97, precision=0.99, recall=0.96 on chb01 (test set: 18,682 windows, 100 seizure, from held-out files)
-- [x] Combined all 5 processed subjects (chb01-chb05) into one training run with memory-safe lazy loading (memmap-backed Dataset, avoids ~15GB+ RAM requirement)
+- [x] Combined all 5 processed subjects (chb01–chb05) into one training run with memory-safe lazy loading (memmap-backed Dataset, avoids ~15GB+ RAM requirement)
 - [x] Trained CNN across 5 subjects, leak-free file-level split: F1=0.88, precision=0.94, recall=0.83 on held-out files/patients (315,686 windows total, 843 seizure, 0.27%)
 - [x] Added per-channel z-score normalization to preprocessing (fixed a signal-amplitude confound where SHAP was ranking channels by raw loudness rather than seizure relevance) — reprocessed all subjects and retrained both models on normalized data
 - [x] SHAP/LIME explainability layer (`explain_shap.py`) — implemented, verified (prediction-consistent, additivity-sane, clinically plausible channel attributions), and run on both the chb01-only and 5-subject combined models

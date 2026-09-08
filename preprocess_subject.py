@@ -112,6 +112,27 @@ for i, edf_file in enumerate(edf_files, 1):
         sfreq = raw.info["sfreq"]
         data = raw.get_data().astype(np.float32)
 
+        # ---------------------------------------------------------
+        # Per-channel z-score normalization (per recording).
+        #
+        # Different EEG channels have naturally different raw signal
+        # amplitudes (e.g. temporal channels near muscle tend to run
+        # "louder" than central ones) - unrelated to seizure activity.
+        # Without this, downstream explainability (SHAP) tends to just
+        # rank high-amplitude channels as "important" regardless of
+        # whether they're actually seizure-relevant, since it's picking
+        # up on scale rather than signal content.
+        #
+        # Each channel is normalized independently, using only this
+        # recording's own mean/std (not global dataset statistics) -
+        # this keeps within-channel temporal changes (e.g. a seizure
+        # causing a spike relative to that channel's own baseline)
+        # intact, while removing cross-channel scale differences.
+        channel_mean = data.mean(axis=1, keepdims=True)
+        channel_std = data.std(axis=1, keepdims=True)
+        data = (data - channel_mean) / (channel_std + 1e-8)  # epsilon avoids div-by-zero on flat/dead channels
+        # ---------------------------------------------------------
+
         if reference_n_channels is None:
             reference_n_channels = data.shape[0]
         elif data.shape[0] != reference_n_channels:
@@ -154,9 +175,6 @@ for i, edf_file in enumerate(edf_files, 1):
 # ---------------------------------------------------------------------
 print(f"\nCombining {len(saved_chunks)} saved chunks...")
 
-# First pass: just check sizes (using mmap_mode="r" reads the array's
-# shape from disk without loading its actual contents into memory) so
-# we know how big to make the final combined array.
 total_windows = 0
 sample_shape = None
 for stem in saved_chunks:
@@ -171,22 +189,13 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 final_windows_path = OUT_DIR / f"{SUBJECT}_windows.npy"
 final_labels_path = OUT_DIR / f"{SUBJECT}_labels.npy"
 
-# open_memmap creates a .npy file on disk that behaves like a normal
-# numpy array, but writes go straight to disk instead of RAM - this is
-# what lets us build a large combined dataset without needing enough
-# RAM to hold the whole thing.
 final_windows = np.lib.format.open_memmap(
     final_windows_path, mode="w+", dtype=np.float32,
     shape=(total_windows, *sample_shape)
 )
 final_labels = np.zeros(total_windows, dtype=np.int8)
-# Tracks which source file each window came from (as an integer index
-# into saved_chunks) - used later to split train/test by file rather
-# than by individual window, which would otherwise leak near-duplicate
-# overlapping windows across the split.
 final_file_ids = np.zeros(total_windows, dtype=np.int32)
 
-# Second pass: copy each file's chunk into its slot in the final array
 offset = 0
 for file_idx, stem in enumerate(saved_chunks):
     w = np.load(TMP_DIR / f"{stem}_windows.npy")
@@ -199,10 +208,9 @@ for file_idx, stem in enumerate(saved_chunks):
     del w, l
     gc.collect()
 
-final_windows.flush()  # ensure everything written to the memmap hits disk
+final_windows.flush()
 np.save(final_labels_path, final_labels)
 np.save(OUT_DIR / f"{SUBJECT}_file_ids.npy", final_file_ids)
-# also save which filename each file_id corresponds to, for reference
 with open(OUT_DIR / f"{SUBJECT}_file_names.txt", "w") as f:
     f.write("\n".join(saved_chunks))
 

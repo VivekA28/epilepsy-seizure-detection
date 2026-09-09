@@ -21,13 +21,16 @@ Running log of what's done and what's next. Update this as the project moves —
 - [x] Retrained baseline CNN with leak-free split: F1=0.97, precision=0.99, recall=0.96 on chb01 (test set: 18,682 windows, 100 seizure, from held-out files)
 - [x] Combined all 5 processed subjects (chb01-chb05) into one training run with memory-safe lazy loading (memmap-backed Dataset, avoids ~15GB+ RAM requirement)
 - [x] Trained CNN across 5 subjects, leak-free file-level split: F1=0.88, precision=0.94, recall=0.83 on held-out files/patients (315,686 windows total, 843 seizure, 0.27%)
+- [x] Added per-channel z-score normalization to preprocessing (fixes SHAP always ranking the same channels regardless of input, caused by raw amplitude scale differences between electrodes)
+- [x] Reprocessed all 5 subjects + retrained CNN with normalization: F1=0.87, precision=0.85, recall=0.89 (confusion matrix [[89257, 32], [22, 178]]) - F1 essentially unchanged vs. pre-normalization, but recall improved (catching more real seizures) at some cost of more false alarms
+- [x] SHAP explainability layer working - produces genuinely input-specific channel importance per prediction
 
 ## In progress
 
+- [ ] Decide on train/test split strategy (per-subject vs pooled) — informed by SHAP finding that the chb01-only model may be picking up patient-specific artifacts (dominant FT9-FT10 channel) that don't reproduce in the multi-subject model
+
 ## Next up
 
-- [ ] SHAP/LIME explainability layer (`src/explainability.py`) — this is the core original contribution
-- [ ] Decide on train/test split strategy (per-subject vs pooled)
 - [ ] Write up results and evaluation metrics
 
 ## Team notes

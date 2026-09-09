@@ -23,11 +23,15 @@ Running log of what's done and what's next. Update this as the project moves —
 - [x] Trained CNN across 5 subjects, leak-free file-level split: F1=0.88, precision=0.94, recall=0.83 on held-out files/patients (315,686 windows total, 843 seizure, 0.27%)
 - [x] Added per-channel z-score normalization to preprocessing (fixes SHAP always ranking the same channels regardless of input, caused by raw amplitude scale differences between electrodes)
 - [x] Reprocessed all 5 subjects + retrained CNN with normalization: F1=0.87, precision=0.85, recall=0.89 (confusion matrix [[89257, 32], [22, 178]]) - F1 essentially unchanged vs. pre-normalization, but recall improved (catching more real seizures) at some cost of more false alarms
-- [x] SHAP explainability layer working - produces genuinely input-specific channel importance per prediction
+- [x] SHAP explainability layer working - produces genuinely input-specific channel importance per prediction; consistently ranks the same top channel across all sampled chb01 seizure windows, but that top channel doesn't reproduce as dominant on the 5-subject combined model - suggests the chb01-only model may be partly picking up a patient-specific pattern rather than a universal seizure marker
+- [x] LIME explainability layer implemented from scratch (`explain_lime.py`) - no off-the-shelf LIME supports this time-series shape, so it segments each window into channel x time-block regions, perturbs them, and fits a local surrogate model to the real model's output; surrogate fit against raw logits rather than probabilities to avoid sigmoid-saturation collapsing the importance scores on confidently-classified windows
+- [x] Cross-validated SHAP against LIME on identical windows: both methods independently agree on the top-ranked channel across every sampled seizure window - two unrelated explanation methods converging is stronger evidence than either alone
+- [x] Built project presentation deck (title, problem framing, dataset, pipeline, engineering challenges, results, SHAP explainability, LIME cross-validation, thank you)
 
 ## In progress
 
-- [ ] Decide on train/test split strategy (per-subject vs pooled) — informed by SHAP finding that the chb01-only model may be picking up patient-specific artifacts (dominant FT9-FT10 channel) that don't reproduce in the multi-subject model
+- [ ] Decide on train/test split strategy (per-subject vs pooled) — informed by the SHAP finding that the chb01-only model may be picking up patient-specific artifacts that don't reproduce in the multi-subject model
+- [ ] Confirm the channel-index-to-electrode-name mapping used by `explain_lime.py` (currently falls back to generic ch0..ch22) so LIME results can cite real electrode names in the write-up, matching what `explain_shap.py` already shows
 
 ## Next up
 

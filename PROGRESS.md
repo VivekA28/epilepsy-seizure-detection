@@ -35,9 +35,9 @@ Do **not** add Transformers, attention, BiLSTM, or large ensembles unless a late
 - [x] Custom LIME time-series explainer implemented: 23 channels × 4 temporal segments = 92 superfeatures, 500 perturbations, locality-weighted Ridge regression on CNN logits.
 - [x] SHAP/LIME findings reviewed. Channel importance varies across windows; repeated FT9-FT10 importance in two seizure windows is a reason to test cross-subject generalization, but is **not proof** of artifact learning.
 
-## Current baseline result
+## Baseline results
 
-Normalized five-subject CNN:
+### Historical normalized baseline (old test-selected protocol; not used for new comparisons)
 
 - Precision: 0.85
 - Recall: 0.89
@@ -45,6 +45,15 @@ Normalized five-subject CNN:
 - Confusion matrix: TN=89,257, FP=32, FN=22, TP=178
 
 Earlier pre-normalization result: F1≈0.88, precision≈0.94, recall≈0.83.
+
+### Corrected five-subject CNN baseline (validation-selected checkpoint)
+
+- Test seizure precision: 0.98
+- Test seizure recall: 0.70
+- Test seizure F1: 0.82
+- Confusion matrix: `[[55621, 2], [45, 107]]`
+
+This corrected result is the baseline used for the new CNN+LSTM / CNN+FFT / CNN+FFT+LSTM comparisons.
 
 ### Important methodological limitation of the old baseline
 
@@ -84,9 +93,9 @@ The exact percentages can be adjusted if the available number of files/subjects 
 
 Rules:
 
-- [ ] No checkpoint selection using test performance.
-- [ ] Use validation F1 (or another pre-declared validation metric) for best-checkpoint selection.
-- [ ] Test set is evaluated only after model selection is complete.
+- [x] No checkpoint selection using test performance in all new experiments.
+- [x] New experiments select the best checkpoint using validation F1.
+- [x] New experiments evaluate the test set once after model selection.
 - [ ] For the final expanded experiment, use **subject-level separation** so all recordings from a subject remain in exactly one partition.
 - [ ] No sequence may cross a subject boundary, EDF boundary, or train/validation/test boundary.
 
@@ -142,9 +151,9 @@ Linear 64→1
 
 ### Refactor required before LSTM
 
-- [ ] Separate the CNN backbone from the final classifier.
-- [ ] Expose the 128-D feature vector after `AdaptiveAvgPool1d`.
-- [ ] Verify that the refactored CNN reproduces the existing baseline behaviour before adding the LSTM.
+- [x] CNN backbone separated conceptually from the classifier.
+- [x] 128-D feature vector exposed after `AdaptiveAvgPool1d` via `extract_features()` and cached.
+- [x] Refactored CNN verified against the original checkpoint behaviour before LSTM integration.
 
 ---
 
@@ -179,19 +188,19 @@ W(t-4)  W(t-3)  W(t-2)  W(t-1)  W(t)
 
 ### Sequence construction rules
 
-- [ ] Preserve chronological order.
-- [ ] Never cross EDF boundaries.
-- [ ] Never cross subject boundaries.
-- [ ] Never cross train/validation/test boundaries.
-- [ ] Index valid sequences explicitly rather than creating sequences from an unordered window array.
+- [x] Preserve chronological order.
+- [x] Never cross EDF boundaries.
+- [x] Local sequence construction keeps each sequence within one subject/EDF.
+- [x] Never cross train/validation/test boundaries.
+- [x] Valid 5-window sequences are indexed explicitly from EDF/file order.
 
 ### Sequence-level imbalance
 
 The current window dataset is ~99.7% non-seizure. The LSTM dataset will also be severely imbalanced.
 
-- [ ] Build sequence-level sampling/balancing.
-- [ ] Weight a sequence according to the target label of its final window.
-- [ ] Do not simply assume the existing window-level sampler can be reused unchanged.
+- [x] Sequence-level weighted sampling implemented.
+- [x] Sequence weight is based on the target label of the final/current window.
+- [x] Training uses a sequence-level sampler rather than the old window-level sampler.
 
 ### Local development strategy
 
@@ -299,11 +308,11 @@ Choose based on validation experiments and interpretability.
 
 ### FFT validation checklist
 
-- [ ] Verify frequency-bin resolution.
-- [ ] Verify band boundaries against FFT bins.
-- [ ] Check for NaN/inf.
-- [ ] Inspect spectra and feature distributions before model integration.
-- [ ] Confirm feature ordering is deterministic: channel × frequency band.
+- [x] Frequency-bin resolution confirmed as 0.25 Hz for N=512, fs=128 Hz.
+- [x] FFT band definitions were implemented and used in the 115-feature representation.
+- [x] FFT features used successfully without NaN/inf failures in model training.
+- [ ] Inspect spectra and feature distributions more thoroughly before final reporting.
+- [x] FFT feature ordering/naming was generated deterministically as channel × band.
 
 ---
 
@@ -325,8 +334,8 @@ EEG window
        classifier
 ```
 
-- [ ] Implement after FFT extraction is validated.
-- [ ] Compare against CNN under the same train/validation/test protocol.
+- [x] Implemented after FFT feature files were generated and shape-checked.
+- [x] Compared against CNN using the same file-level 70/15/15 protocol.
 - [ ] Keep this ablation if it helps explain the contribution of FFT.
 
 ---
@@ -561,44 +570,156 @@ Do not select a final model from one metric alone. Consider validation performan
 
 ---
 
+# 15. Work Completed — 2026-10-01
+
+## Evaluation protocol correction
+
+- [x] Replaced the old two-way train/test workflow with a file-level 70% train / 15% validation / 15% test split for new experiments.
+- [x] Best checkpoints are selected using validation F1.
+- [x] Test data is not used for epoch-by-epoch model selection.
+- [x] Added a guard for the two-stage stratified split so small temporary splits fail clearly instead of producing an obscure sklearn error.
+- [x] Added reproducibility seeds (`torch`, NumPy, and CUDA when available).
+
+The final patient-independent experiment is still pending; the current local protocol remains file-level because recordings from the same subject can occur in different partitions.
+
+## CNN feature extraction / LSTM pipeline
+
+- [x] Refactored the CNN so its 128-D pooled representation can be extracted independently of the classifier.
+- [x] Cached 128-D CNN features for chb01–chb05 under `data/processed/cnn_features/`.
+- [x] Built 5-window chronological sequence construction.
+- [x] Enforced EDF/file and partition boundaries during sequence construction.
+- [x] Used the last/current window as the sequence target.
+- [x] Added sequence-level `WeightedRandomSampler` based on the target label.
+- [x] Trained the frozen-CNN + LSTM development model.
+
+### CNN + LSTM local result
+
+- Validation best checkpoint: epoch 5, validation F1 = 0.93.
+- Test seizure precision = 0.93.
+- Test seizure recall = 0.82.
+- Test seizure F1 = 0.87.
+- Test confusion matrix: `[[55514, 9], [27, 125]]`.
+
+## FFT feature pipeline
+
+- [x] FFT features generated for all five current subjects.
+- [x] Each 23-channel window produces 115 features (23 channels × 5 bands).
+- [x] Features use the planned Hann-window + RFFT + band-power + log-power representation.
+- [x] Numerical safeguard uses `log(power + 1e-8)`.
+- [x] Current FFT caches:
+  - chb01: `(72951, 115)`
+  - chb02: `(63443, 115)`
+  - chb03: `(68365, 115)`
+  - chb04: `(40761, 115)`
+  - chb05: `(70166, 115)`
+- [x] CNN and FFT rows were shape-checked against labels/file IDs before training the ablation.
+
+## CNN + FFT ablation
+
+- [x] Built a per-window CNN + FFT classifier without LSTM.
+- [x] Applied LayerNorm separately to the 128-D CNN branch and 115-D FFT branch before concatenation.
+- [x] Used the corrected validation-selected checkpoint protocol.
+
+### CNN + FFT local result
+
+- Validation best checkpoint: epoch 10, validation F1 = 0.93.
+- Test seizure precision = 0.97.
+- Test seizure recall = 0.77.
+- Test seizure F1 = 0.86.
+- Test confusion matrix: `[[55620, 3], [35, 117]]`.
+
+## CNN + FFT + LSTM combined model
+
+- [x] Built the combined 243-D per-window representation (128 CNN + 115 FFT).
+- [x] Applied separate LayerNorm to CNN and FFT branches before concatenation.
+- [x] Fed 5 chronological fused windows into a single-layer unidirectional LSTM with hidden size 128.
+- [x] Used validation F1 for checkpoint selection and evaluated the test set once.
+
+### CNN + FFT + LSTM local result
+
+- Validation best checkpoint: epoch 12, validation F1 = 0.94.
+- Test seizure precision = 0.99.
+- Test seizure recall = 0.78.
+- Test seizure F1 = 0.87.
+- Test confusion matrix: `[[55522, 1], [34, 118]]`.
+
+## Controlled local experiment matrix
+
+| Model | Seizure Precision | Seizure Recall | Seizure F1 |
+|---|---:|---:|---:|
+| CNN (corrected protocol) | 0.98 | 0.70 | 0.82 |
+| CNN + LSTM | 0.93 | 0.82 | 0.87 |
+| CNN + FFT | 0.97 | 0.77 | 0.86 |
+| CNN + FFT + LSTM | 0.99 | 0.78 | 0.87 |
+
+Interpretation for development only:
+- LSTM produced the largest recall increase over the corrected CNN baseline in this local experiment.
+- FFT improved the CNN-only ablation.
+- Adding FFT to CNN + LSTM produced similar F1 to CNN + LSTM but changed the precision/recall trade-off.
+- These results are not yet patient-independent final results.
+
+## Code / engineering fixes completed today
+
+- [x] Added dynamic checkpoint filenames to prevent one-subject runs from overwriting multi-subject models.
+- [x] Reduced unnecessary vertical formatting/comments in the model scripts.
+- [x] Removed the PyTorch warning caused by converting read-only memory-mapped NumPy rows to tensors by copying feature rows before conversion.
+- [x] Added separate viva notes for the CNN+LSTM and CNN+FFT+LSTM stages.
+
+---
+
+# 16. Work Remaining
+
+- [ ] More CHB-MIT subjects.
+- [ ] Complete/record formal standalone FFT validation and spectrum inspection.
+- [ ] Integrate and harmonize a second EEG dataset.
+- [ ] Build the final subject-level train/validation/test split.
+- [ ] Run larger experiments on the university GPU.
+- [ ] Fine-tune CNN + LSTM end-to-end.
+- [ ] Fine-tune CNN + FFT + LSTM end-to-end.
+- [ ] Add event-level sensitivity, false alarms/hour, and detection latency with a pre-declared event-matching rule.
+- [ ] Re-run SHAP/LIME on the final selected model using multiple subjects.
+- [ ] Finalize the report/presentation after expanded experiments.
+
+---
+
 # 15. Work Order — Next Steps
 
 ## Step 1 — Correct evaluation protocol
 
-- [ ] Refactor baseline training to use train/validation/test.
-- [ ] Select checkpoint only from validation performance.
-- [ ] Keep test untouched until final evaluation.
+- [x] Refactor baseline training to use train/validation/test.
+- [x] Select checkpoint only from validation performance.
+- [x] Keep test untouched until final evaluation.
 
 ## Step 2 — Refactor CNN
 
-- [ ] Expose 128-D feature vector.
-- [ ] Verify refactored CNN against baseline.
+- [x] Expose 128-D feature vector.
+- [x] Verify refactored CNN against baseline.
 
 ## Step 3 — CNN + LSTM locally
 
-- [ ] Build boundary-safe chronological sequences.
-- [ ] Add sequence-level imbalance handling.
-- [ ] Cache frozen CNN features.
-- [ ] Train LSTM locally.
-- [ ] Compare with CNN baseline.
+- [x] Build boundary-safe chronological sequences.
+- [x] Add sequence-level imbalance handling.
+- [x] Cache frozen CNN features.
+- [x] Train LSTM locally.
+- [x] Compare with CNN baseline.
 
 ## Step 4 — FFT locally
 
-- [ ] Implement RFFT + Hann.
-- [ ] Extract five band powers.
-- [ ] Add `epsilon` safeguard.
-- [ ] Validate spectra/features.
+- [x] Implement RFFT + Hann.
+- [x] Extract five band powers.
+- [x] Add `epsilon` safeguard.
+- [x] Validate FFT feature dimensions and numerical behaviour; deeper spectrum inspection remains pending.
 - [ ] Optionally compare absolute vs relative band power.
 
 ## Step 5 — CNN + FFT ablation
 
-- [ ] Train and evaluate under identical protocol.
+- [x] Trained and evaluated with the same corrected protocol.
 
 ## Step 6 — CNN + FFT + LSTM
 
-- [ ] Normalize branches before fusion.
-- [ ] Build chronological fused sequences.
-- [ ] Train locally first.
+- [x] CNN and FFT branches normalized separately with LayerNorm before fusion.
+- [x] Built 5-window chronological fused sequences.
+- [x] Trained locally on the five-subject development dataset.
 
 ## Step 7 — Expand data
 
@@ -641,7 +762,7 @@ Do not select a final model from one metric alone. Consider validation performan
 
 # 16. Current Status in One Line
 
-**Baseline CNN + SHAP/LIME is complete on five CHB-MIT subjects with file-level leakage control; the methodology is now being upgraded to validation-based model selection, chronological CNN+LSTM modelling, FFT features, CNN+FFT+LSTM fusion, event-level evaluation, larger multi-subject data, and eventual subject-independent testing on expanded datasets.**
+**Baseline CNN + SHAP/LIME is complete; corrected validation-based CNN evaluation, frozen-CNN + LSTM, CNN + FFT, and frozen-feature CNN + FFT + LSTM local development experiments are complete on chb01–chb05. Next major work is expanded data, subject-independent evaluation, end-to-end GPU fine-tuning, event-level metrics, and final explainability.**
 
 ---
 

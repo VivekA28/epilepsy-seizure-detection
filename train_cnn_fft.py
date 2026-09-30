@@ -47,8 +47,8 @@ class FusedFeatureDataset(Dataset):
 
     def __getitem__(self, index: int):
         subject_idx, window_idx = self.records[index]
-        cnn = np.asarray(self.cnn_arrays[subject_idx][window_idx], dtype=np.float32)
-        fft = np.asarray(self.fft_arrays[subject_idx][window_idx], dtype=np.float32)
+        cnn = np.asarray(self.cnn_arrays[subject_idx][window_idx], dtype=np.float32 , copy=True,)
+        fft = np.asarray(self.fft_arrays[subject_idx][window_idx], dtype=np.float32, copy=True,)
         label = np.float32(self.labels_arrays[subject_idx][window_idx])
         return torch.from_numpy(cnn), torch.from_numpy(fft), torch.tensor(label, dtype=torch.float32)
 

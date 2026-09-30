@@ -5,228 +5,1202 @@ into a single dataset.
 
 Processes one file at a time and writes each file's result straight to
 disk before moving to the next, rather than keeping every file's data
-in memory simultaneously. The final combined dataset is also built on
-disk (via a memory-mapped array) instead of in RAM. This keeps memory
-usage low regardless of how many files or subjects are processed.
+in memory simultaneously.
+
+The final combined dataset is also built on disk using a memory-mapped
+array instead of loading everything into RAM.
+
+Current development subjects:
+    chb01
+    chb02
+    chb03
+    chb04
+    chb05
 
 Run from the project root:
+
     python preprocess_subject.py chb01
+
+    python preprocess_subject.py chb02
+
+    ...
+
+The existing preprocessing behaviour is preserved:
+    256 Hz -> 128 Hz
+    60 Hz notch
+    0.5-40 Hz bandpass
+    per-channel z-score normalization
+    4-second windows
+    50% overlap
 """
+
 
 import sys
 import gc
 import shutil
-import mne
 import re
+
+import mne
 import numpy as np
+import pandas as pd
+
 from pathlib import Path
 
-# ---------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------
-SUBJECT = sys.argv[1] if len(sys.argv) > 1 else "chb01"
-DATA_DIR = Path(f"data/raw/{SUBJECT}")
-SUMMARY_FILE = DATA_DIR / f"{SUBJECT}-summary.txt"
 
+# =====================================================================
+# 1. Configuration
+# =====================================================================
+
+SUBJECT = (
+    sys.argv[1]
+    if len(sys.argv) > 1
+    else "chb01"
+)
+
+
+DATA_DIR = Path(
+    f"data/raw/{SUBJECT}"
+)
+
+
+SUMMARY_FILE = (
+    DATA_DIR / f"{SUBJECT}-summary.txt"
+)
+
+
+# Existing preprocessing settings
 NOTCH_FREQ = 60.0
+
 BANDPASS_LOW = 0.5
+
 BANDPASS_HIGH = 40.0
+
 WINDOW_SEC = 4
+
 WINDOW_OVERLAP = 0.5
 
-TMP_DIR = Path(f"data/processed/_tmp_{SUBJECT}")
-TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# ---------------------------------------------------------------------
-# Seizure time parser (unchanged)
-# ---------------------------------------------------------------------
-def parse_seizures_for_file(summary_path: Path, target_filename: str):
+# Temporary directory for per-EDF results
+TMP_DIR = Path(
+    f"data/processed/_tmp_{SUBJECT}"
+)
+
+TMP_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+
+# =====================================================================
+# 2. Parse seizure annotations
+# =====================================================================
+
+def parse_seizures_for_file(
+    summary_path: Path,
+    target_filename: str
+):
+    """
+    Read seizure start/end times for one EDF file
+    from the CHB-MIT summary file.
+
+    Returns:
+        List of tuples:
+
+        [
+            (start_seconds, end_seconds),
+            ...
+        ]
+    """
+
     text = summary_path.read_text()
+
     chunks = text.split("File Name:")
+
     seizures = []
+
+
     for chunk in chunks:
-        if target_filename not in chunk.split("\n")[0]:
+
+        first_line = (
+            chunk.split("\n")[0]
+        )
+
+
+        if target_filename not in first_line:
             continue
-        starts = re.findall(r"Seizure Start Time:\s*(\d+)\s*seconds", chunk)
-        ends = re.findall(r"Seizure End Time:\s*(\d+)\s*seconds", chunk)
+
+
+        starts = re.findall(
+            r"Seizure Start Time:\s*(\d+)\s*seconds",
+            chunk
+        )
+
+        ends = re.findall(
+            r"Seizure End Time:\s*(\d+)\s*seconds",
+            chunk
+        )
+
+
+        # Support alternate CHB-MIT annotation format
         if not starts:
-            starts = re.findall(r"Seizure \d+ Start Time:\s*(\d+)\s*seconds", chunk)
-            ends = re.findall(r"Seizure \d+ End Time:\s*(\d+)\s*seconds", chunk)
+
+            starts = re.findall(
+                r"Seizure \d+ Start Time:\s*(\d+)\s*seconds",
+                chunk
+            )
+
+            ends = re.findall(
+                r"Seizure \d+ End Time:\s*(\d+)\s*seconds",
+                chunk
+            )
+
+
         for s, e in zip(starts, ends):
-            seizures.append((int(s), int(e)))
+
+            seizures.append(
+                (
+                    int(s),
+                    int(e)
+                )
+            )
+
+
     return seizures
 
-def make_windows(data, sfreq, window_sec, overlap, seizure_times):
-    win_len = int(window_sec * sfreq)
-    step = int(win_len * (1 - overlap))
+
+# =====================================================================
+# 3. Create EEG windows
+# =====================================================================
+
+def make_windows(
+    data,
+    sfreq,
+    window_sec,
+    overlap,
+    seizure_times
+):
+    """
+    Split one preprocessed EDF recording into overlapping windows.
+
+    Input:
+        data:
+            Shape = (channels, samples)
+
+        sfreq:
+            Sampling frequency after preprocessing.
+
+        window_sec:
+            Window length in seconds.
+
+        overlap:
+            Fractional overlap.
+
+        seizure_times:
+            List of seizure intervals.
+
+    Returns:
+        windows:
+            Shape = (n_windows, channels, samples)
+
+        labels:
+            Shape = (n_windows,)
+
+        start_times:
+            Start time of every window in seconds.
+
+        end_times:
+            End time of every window in seconds.
+
+        window_indices:
+            Chronological index of every window.
+    """
+
+    # Number of samples in one window
+    win_len = int(
+        window_sec * sfreq
+    )
+
+
+    # For 50% overlap:
+    #
+    # 4 sec window
+    # 50% overlap
+    #
+    # stride = 2 sec
+
+    step = int(
+        win_len * (1 - overlap)
+    )
+
+
     n_samples = data.shape[1]
 
+
     windows = []
+
     labels = []
 
-    for start_sample in range(0, n_samples - win_len + 1, step):
-        end_sample = start_sample + win_len
-        start_sec = start_sample / sfreq
-        end_sec = end_sample / sfreq
+    start_times = []
 
-        label = 0
-        for s_start, s_end in seizure_times:
-            if start_sec < s_end and end_sec > s_start:
-                label = 1
-                break
+    end_times = []
 
-        windows.append(data[:, start_sample:end_sample])
-        labels.append(label)
+    window_indices = []
 
-    # Store as float32 (not the numpy default float64) since that's more
-    # than enough precision for EEG amplitudes and keeps file sizes/memory
-    # usage down. Labels are just 0/1 so int8 is plenty.
-    return np.array(windows, dtype=np.float32), np.array(labels, dtype=np.int8)
 
-# ---------------------------------------------------------------------
-# Process every EDF file, saving each result to disk immediately
-# ---------------------------------------------------------------------
-edf_files = sorted(DATA_DIR.glob("*.edf"))
-print(f"Found {len(edf_files)} EDF files for {SUBJECT}")
+    # -------------------------------------------------------------
+    # Generate windows chronologically
+    # -------------------------------------------------------------
 
-reference_n_channels = None
-saved_chunks = []   # tracks which per-file chunks were saved to disk
-skipped = []
+    for window_idx, start_sample in enumerate(
+        range(
+            0,
+            n_samples - win_len + 1,
+            step
+        )
+    ):
 
-for i, edf_file in enumerate(edf_files, 1):
-    try:
-        raw = mne.io.read_raw_edf(edf_file, preload=True, verbose=False)
+        end_sample = (
+            start_sample + win_len
+        )
 
-        # Downsample from 256Hz to 128Hz before filtering. Seizure-relevant
-        # activity lives well under 40Hz (our bandpass upper limit anyway),
-        # so this loses essentially no information we care about, while
-        # halving the amount of data every later step has to hold in memory.
-        raw.resample(128, verbose=False)
 
-        # n_jobs=1 keeps mne's filtering single-threaded, which uses
-        # noticeably less peak memory than its default parallel mode -
-        # slower, but safer on a machine with limited RAM.
-        raw.notch_filter(freqs=NOTCH_FREQ, n_jobs=1, verbose=False)
-        raw.filter(l_freq=BANDPASS_LOW, h_freq=BANDPASS_HIGH, n_jobs=1, verbose=False)
+        start_sec = (
+            start_sample / sfreq
+        )
 
-        sfreq = raw.info["sfreq"]
-        data = raw.get_data().astype(np.float32)
+
+        end_sec = (
+            end_sample / sfreq
+        )
+
 
         # ---------------------------------------------------------
-        # Per-channel z-score normalization (per recording).
+        # Determine seizure label
         #
-        # Different EEG channels have naturally different raw signal
-        # amplitudes (e.g. temporal channels near muscle tend to run
-        # "louder" than central ones) - unrelated to seizure activity.
-        # Without this, downstream explainability (SHAP) tends to just
-        # rank high-amplitude channels as "important" regardless of
-        # whether they're actually seizure-relevant, since it's picking
-        # up on scale rather than signal content.
+        # A window is labelled seizure if it overlaps
+        # with any seizure interval.
+        # ---------------------------------------------------------
+
+        label = 0
+
+
+        for (
+            s_start,
+            s_end
+        ) in seizure_times:
+
+            if (
+                start_sec < s_end
+                and
+                end_sec > s_start
+            ):
+
+                label = 1
+
+                break
+
+
+        # ---------------------------------------------------------
+        # Store window
+        # ---------------------------------------------------------
+
+        windows.append(
+            data[
+                :,
+                start_sample:end_sample
+            ]
+        )
+
+
+        labels.append(
+            label
+        )
+
+
+        start_times.append(
+            start_sec
+        )
+
+
+        end_times.append(
+            end_sec
+        )
+
+
+        window_indices.append(
+            window_idx
+        )
+
+
+    # -------------------------------------------------------------
+    # Convert to memory-efficient NumPy arrays
+    # -------------------------------------------------------------
+
+    windows = np.array(
+        windows,
+        dtype=np.float32
+    )
+
+
+    labels = np.array(
+        labels,
+        dtype=np.int8
+    )
+
+
+    start_times = np.array(
+        start_times,
+        dtype=np.float32
+    )
+
+
+    end_times = np.array(
+        end_times,
+        dtype=np.float32
+    )
+
+
+    window_indices = np.array(
+        window_indices,
+        dtype=np.int32
+    )
+
+
+    return (
+        windows,
+        labels,
+        start_times,
+        end_times,
+        window_indices
+    )
+
+
+# =====================================================================
+# 4. Find EDF files
+# =====================================================================
+
+edf_files = sorted(
+    DATA_DIR.glob("*.edf")
+)
+
+
+print(
+    f"Found {len(edf_files)} EDF files "
+    f"for {SUBJECT}"
+)
+
+
+# =====================================================================
+# 5. Variables used during processing
+# =====================================================================
+
+reference_n_channels = None
+
+
+# Keep track of successfully processed files
+saved_chunks = []
+
+
+# Keep track of skipped files
+skipped = []
+
+
+# Store channel names from the first valid EDF
+reference_channel_names = None
+
+
+# =====================================================================
+# 6. Process each EDF file
+# =====================================================================
+
+for i, edf_file in enumerate(
+    edf_files,
+    1
+):
+
+    try:
+
+        print(
+            f"\n[{i}/{len(edf_files)}] "
+            f"Processing {edf_file.name}"
+        )
+
+
+        # ---------------------------------------------------------
+        # Load EDF
+        # ---------------------------------------------------------
+
+        raw = mne.io.read_raw_edf(
+            edf_file,
+            preload=True,
+            verbose=False
+        )
+
+
+        # ---------------------------------------------------------
+        # Resample:
         #
-        # Each channel is normalized independently, using only this
-        # recording's own mean/std (not global dataset statistics) -
-        # this keeps within-channel temporal changes (e.g. a seizure
-        # causing a spike relative to that channel's own baseline)
-        # intact, while removing cross-channel scale differences.
-        channel_mean = data.mean(axis=1, keepdims=True)
-        channel_std = data.std(axis=1, keepdims=True)
-        data = (data - channel_mean) / (channel_std + 1e-8)  # epsilon avoids div-by-zero on flat/dead channels
+        # 256 Hz -> 128 Hz
+        # ---------------------------------------------------------
+
+        raw.resample(
+            128,
+            verbose=False
+        )
+
+
+        # ---------------------------------------------------------
+        # Notch filter
+        # ---------------------------------------------------------
+
+        raw.notch_filter(
+            freqs=NOTCH_FREQ,
+            n_jobs=1,
+            verbose=False
+        )
+
+
+        # ---------------------------------------------------------
+        # Bandpass filter
+        #
+        # 0.5 Hz -> 40 Hz
+        # ---------------------------------------------------------
+
+        raw.filter(
+            l_freq=BANDPASS_LOW,
+            h_freq=BANDPASS_HIGH,
+            n_jobs=1,
+            verbose=False
+        )
+
+
+        # Sampling frequency after resampling
+        sfreq = raw.info["sfreq"]
+
+
+        # ---------------------------------------------------------
+        # Get channel names
+        # ---------------------------------------------------------
+
+        channel_names = list(
+            raw.ch_names
+        )
+
+
+        # ---------------------------------------------------------
+        # Get EEG data
+        #
+        # Shape:
+        #
+        # (channels, samples)
+        # ---------------------------------------------------------
+
+        data = raw.get_data().astype(
+            np.float32
+        )
+
+
+        # ---------------------------------------------------------
+        # Check channel count
         # ---------------------------------------------------------
 
         if reference_n_channels is None:
-            reference_n_channels = data.shape[0]
-        elif data.shape[0] != reference_n_channels:
-            print(f"  [{i}/{len(edf_files)}] {edf_file.name}: SKIPPED "
-                  f"(channel count {data.shape[0]} != expected {reference_n_channels})")
-            skipped.append(edf_file.name)
-            del raw, data
+
+            reference_n_channels = (
+                data.shape[0]
+            )
+
+            reference_channel_names = (
+                channel_names
+            )
+
+
+        elif (
+            data.shape[0]
+            != reference_n_channels
+        ):
+
+            print(
+                f"  SKIPPED: channel count "
+                f"{data.shape[0]} != "
+                f"expected "
+                f"{reference_n_channels}"
+            )
+
+
+            skipped.append(
+                edf_file.name
+            )
+
+
+            del raw
+            del data
+
             gc.collect()
+
             continue
 
-        seizure_times = parse_seizures_for_file(SUMMARY_FILE, edf_file.name)
-        windows, labels = make_windows(data, sfreq, WINDOW_SEC, WINDOW_OVERLAP, seizure_times)
 
-        # Save this file's windows/labels to a temp folder right away,
-        # along with which source file they came from - needed later so
-        # train/test splitting can be done by file rather than by
-        # individual window (avoids leaking near-duplicate overlapping
-        # windows across the train/test boundary)
-        w_path = TMP_DIR / f"{edf_file.stem}_windows.npy"
-        l_path = TMP_DIR / f"{edf_file.stem}_labels.npy"
-        np.save(w_path, windows)
-        np.save(l_path, labels)
-        saved_chunks.append(edf_file.stem)
+        # ---------------------------------------------------------
+        # Check channel ordering
+        #
+        # We preserve the existing project's behaviour of
+        # using the same number of channels.
+        #
+        # We also record the actual channel names.
+        # ---------------------------------------------------------
 
-        n_seizure = labels.sum()
-        print(f"  [{i}/{len(edf_files)}] {edf_file.name}: "
-              f"{len(windows)} windows, {n_seizure} seizure "
-              f"({'seizure file' if seizure_times else 'clean file'})")
+        if (
+            reference_channel_names is not None
+            and
+            channel_names
+            != reference_channel_names
+        ):
 
-        # Free this file's data now that it's saved, before loading the next
-        del raw, data, windows, labels
+            print(
+                "  WARNING: channel names/order "
+                "differ from the first valid EDF."
+            )
+
+
+        # ---------------------------------------------------------
+        # Per-channel z-score normalization
+        #
+        # This is unchanged from your existing pipeline.
+        # ---------------------------------------------------------
+
+        channel_mean = data.mean(
+            axis=1,
+            keepdims=True
+        )
+
+
+        channel_std = data.std(
+            axis=1,
+            keepdims=True
+        )
+
+
+        data = (
+            data - channel_mean
+        ) / (
+            channel_std + 1e-8
+        )
+
+
+        # ---------------------------------------------------------
+        # Read seizure annotations
+        # ---------------------------------------------------------
+
+        seizure_times = (
+            parse_seizures_for_file(
+                SUMMARY_FILE,
+                edf_file.name
+            )
+        )
+
+
+        # ---------------------------------------------------------
+        # Create windows
+        # ---------------------------------------------------------
+
+        (
+            windows,
+            labels,
+            start_times,
+            end_times,
+            window_indices
+        ) = make_windows(
+            data,
+            sfreq,
+            WINDOW_SEC,
+            WINDOW_OVERLAP,
+            seizure_times
+        )
+
+
+        # ---------------------------------------------------------
+        # Save per-file temporary data
+        # ---------------------------------------------------------
+
+        w_path = (
+            TMP_DIR
+            / f"{edf_file.stem}_windows.npy"
+        )
+
+
+        l_path = (
+            TMP_DIR
+            / f"{edf_file.stem}_labels.npy"
+        )
+
+
+        s_path = (
+            TMP_DIR
+            / f"{edf_file.stem}_start_times.npy"
+        )
+
+
+        e_path = (
+            TMP_DIR
+            / f"{edf_file.stem}_end_times.npy"
+        )
+
+
+        wi_path = (
+            TMP_DIR
+            / f"{edf_file.stem}_window_indices.npy"
+        )
+
+
+        # Save arrays
+        np.save(
+            w_path,
+            windows
+        )
+
+
+        np.save(
+            l_path,
+            labels
+        )
+
+
+        np.save(
+            s_path,
+            start_times
+        )
+
+
+        np.save(
+            e_path,
+            end_times
+        )
+
+
+        np.save(
+            wi_path,
+            window_indices
+        )
+
+
+        # Record successful file
+        saved_chunks.append(
+            edf_file.stem
+        )
+
+
+        # ---------------------------------------------------------
+        # Print file summary
+        # ---------------------------------------------------------
+
+        n_seizure = int(
+            labels.sum()
+        )
+
+
+        file_type = (
+            "seizure file"
+            if seizure_times
+            else "clean file"
+        )
+
+
+        print(
+            f"  {len(windows)} windows, "
+            f"{n_seizure} seizure "
+            f"({file_type})"
+        )
+
+
+        # ---------------------------------------------------------
+        # Free memory before next EDF
+        # ---------------------------------------------------------
+
+        del raw
+        del data
+        del windows
+        del labels
+        del start_times
+        del end_times
+        del window_indices
+
         gc.collect()
 
-    except Exception as e:
-        print(f"  [{i}/{len(edf_files)}] {edf_file.name}: SKIPPED (error: {e})")
-        skipped.append(edf_file.name)
 
-# ---------------------------------------------------------------------
-# Combine all per-file chunks into one final dataset for this subject
-# ---------------------------------------------------------------------
-print(f"\nCombining {len(saved_chunks)} saved chunks...")
+    except Exception as e:
+
+        print(
+            f"  SKIPPED "
+            f"(error: {e})"
+        )
+
+
+        skipped.append(
+            edf_file.name
+        )
+
+
+        # Make sure memory is released
+        gc.collect()
+
+
+# =====================================================================
+# 7. Check that at least one file was processed
+# =====================================================================
+
+if not saved_chunks:
+
+    print(
+        "\nERROR: No EDF files were "
+        "successfully processed."
+    )
+
+    shutil.rmtree(
+        TMP_DIR,
+        ignore_errors=True
+    )
+
+    sys.exit(1)
+
+
+# =====================================================================
+# 8. Combine all per-file chunks
+# =====================================================================
+
+print(
+    f"\nCombining "
+    f"{len(saved_chunks)} saved chunks..."
+)
+
 
 total_windows = 0
+
 sample_shape = None
+
+
+# -------------------------------------------------------------
+# First pass:
+# determine total number of windows
+# -------------------------------------------------------------
+
 for stem in saved_chunks:
-    w = np.load(TMP_DIR / f"{stem}_windows.npy", mmap_mode="r")
-    total_windows += w.shape[0]
+
+    w = np.load(
+        TMP_DIR
+        / f"{stem}_windows.npy",
+        mmap_mode="r"
+    )
+
+
+    total_windows += (
+        w.shape[0]
+    )
+
+
     if sample_shape is None:
-        sample_shape = w.shape[1:]
+
+        sample_shape = (
+            w.shape[1:]
+        )
+
+
     del w
 
-OUT_DIR = Path("data/processed")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-final_windows_path = OUT_DIR / f"{SUBJECT}_windows.npy"
-final_labels_path = OUT_DIR / f"{SUBJECT}_labels.npy"
+
+# =====================================================================
+# 9. Create output directory
+# =====================================================================
+
+OUT_DIR = Path(
+    "data/processed"
+)
+
+
+OUT_DIR.mkdir(
+    parents=True,
+    exist_ok=True
+)
+
+
+# =====================================================================
+# 10. Define final output paths
+# =====================================================================
+
+final_windows_path = (
+    OUT_DIR
+    / f"{SUBJECT}_windows.npy"
+)
+
+
+final_labels_path = (
+    OUT_DIR
+    / f"{SUBJECT}_labels.npy"
+)
+
+
+final_file_ids_path = (
+    OUT_DIR
+    / f"{SUBJECT}_file_ids.npy"
+)
+
+
+final_file_names_path = (
+    OUT_DIR
+    / f"{SUBJECT}_file_names.txt"
+)
+
+
+final_metadata_path = (
+    OUT_DIR
+    / f"{SUBJECT}_metadata.csv"
+)
+
+
+final_channel_names_path = (
+    OUT_DIR
+    / f"{SUBJECT}_channel_names.txt"
+)
+
+
+# =====================================================================
+# 11. Create memory-mapped final window array
+# =====================================================================
 
 final_windows = np.lib.format.open_memmap(
-    final_windows_path, mode="w+", dtype=np.float32,
-    shape=(total_windows, *sample_shape)
+    final_windows_path,
+    mode="w+",
+    dtype=np.float32,
+    shape=(
+        total_windows,
+        *sample_shape
+    )
 )
-final_labels = np.zeros(total_windows, dtype=np.int8)
-final_file_ids = np.zeros(total_windows, dtype=np.int32)
+
+
+# Labels can comfortably stay in RAM
+final_labels = np.zeros(
+    total_windows,
+    dtype=np.int8
+)
+
+
+# File IDs
+final_file_ids = np.zeros(
+    total_windows,
+    dtype=np.int32
+)
+
+
+# =====================================================================
+# 12. Combine files + create metadata
+# =====================================================================
 
 offset = 0
-for file_idx, stem in enumerate(saved_chunks):
-    w = np.load(TMP_DIR / f"{stem}_windows.npy")
-    l = np.load(TMP_DIR / f"{stem}_labels.npy")
+
+
+metadata_rows = []
+
+
+for file_idx, stem in enumerate(
+    saved_chunks
+):
+
+    # -------------------------------------------------------------
+    # Load per-file arrays
+    # -------------------------------------------------------------
+
+    w = np.load(
+        TMP_DIR
+        / f"{stem}_windows.npy"
+    )
+
+
+    l = np.load(
+        TMP_DIR
+        / f"{stem}_labels.npy"
+    )
+
+
+    start_times = np.load(
+        TMP_DIR
+        / f"{stem}_start_times.npy"
+    )
+
+
+    end_times = np.load(
+        TMP_DIR
+        / f"{stem}_end_times.npy"
+    )
+
+
+    window_indices = np.load(
+        TMP_DIR
+        / f"{stem}_window_indices.npy"
+    )
+
+
     n = w.shape[0]
-    final_windows[offset:offset + n] = w
-    final_labels[offset:offset + n] = l
-    final_file_ids[offset:offset + n] = file_idx
+
+
+    # -------------------------------------------------------------
+    # Copy EEG windows
+    # -------------------------------------------------------------
+
+    final_windows[
+        offset:offset + n
+    ] = w
+
+
+    # -------------------------------------------------------------
+    # Copy labels
+    # -------------------------------------------------------------
+
+    final_labels[
+        offset:offset + n
+    ] = l
+
+
+    # -------------------------------------------------------------
+    # Assign file ID
+    #
+    # Every window from this EDF receives the same file ID.
+    # -------------------------------------------------------------
+
+    final_file_ids[
+        offset:offset + n
+    ] = file_idx
+
+
+    # -------------------------------------------------------------
+    # Create metadata
+    # -------------------------------------------------------------
+
+    for j in range(n):
+
+        metadata_rows.append({
+
+            "dataset_id": "chbmit",
+
+            "subject_id": SUBJECT,
+
+            "edf_id": stem,
+
+            "window_index": int(
+                window_indices[j]
+            ),
+
+            "start_sec": float(
+                start_times[j]
+            ),
+
+            "end_sec": float(
+                end_times[j]
+            ),
+
+            "label": int(
+                l[j]
+            ),
+
+            "sampling_rate": float(
+                sfreq
+            ),
+
+            "n_channels": int(
+                w.shape[1]
+            ),
+
+            "n_samples": int(
+                w.shape[2]
+            )
+        })
+
+
     offset += n
-    del w, l
+
+
+    # -------------------------------------------------------------
+    # Release memory
+    # -------------------------------------------------------------
+
+    del w
+    del l
+    del start_times
+    del end_times
+    del window_indices
+
     gc.collect()
 
+
+# =====================================================================
+# 13. Flush final window array
+# =====================================================================
+
 final_windows.flush()
-np.save(final_labels_path, final_labels)
-np.save(OUT_DIR / f"{SUBJECT}_file_ids.npy", final_file_ids)
-with open(OUT_DIR / f"{SUBJECT}_file_names.txt", "w") as f:
-    f.write("\n".join(saved_chunks))
 
-# ---------------------------------------------------------------------
-# Clean up temp per-file chunks
-# ---------------------------------------------------------------------
-shutil.rmtree(TMP_DIR)
 
-print("\n" + "=" * 60)
-print(f"SUMMARY - {SUBJECT}")
-print("=" * 60)
-print(f"Files processed: {len(saved_chunks)} / {len(edf_files)}")
+# =====================================================================
+# 14. Save labels and file IDs
+# =====================================================================
+
+np.save(
+    final_labels_path,
+    final_labels
+)
+
+
+np.save(
+    final_file_ids_path,
+    final_file_ids
+)
+
+
+# =====================================================================
+# 15. Save EDF file names
+# =====================================================================
+
+with open(
+    final_file_names_path,
+    "w"
+) as f:
+
+    f.write(
+        "\n".join(
+            saved_chunks
+        )
+    )
+
+
+# =====================================================================
+# 16. Save channel names
+# =====================================================================
+
+if reference_channel_names is not None:
+
+    with open(
+        final_channel_names_path,
+        "w"
+    ) as f:
+
+        for channel_name in (
+            reference_channel_names
+        ):
+
+            f.write(
+                channel_name
+                + "\n"
+            )
+
+
+# =====================================================================
+# 17. Save metadata CSV
+# =====================================================================
+
+metadata_df = pd.DataFrame(
+    metadata_rows
+)
+
+
+metadata_df.to_csv(
+    final_metadata_path,
+    index=False
+)
+
+
+# =====================================================================
+# 18. Clean up temporary files
+# =====================================================================
+
+shutil.rmtree(
+    TMP_DIR
+)
+
+
+# =====================================================================
+# 19. Final summary
+# =====================================================================
+
+print(
+    "\n"
+    + "=" * 60
+)
+
+
+print(
+    f"SUMMARY - {SUBJECT}"
+)
+
+
+print(
+    "=" * 60
+)
+
+
+print(
+    f"Files processed: "
+    f"{len(saved_chunks)} / "
+    f"{len(edf_files)}"
+)
+
+
 if skipped:
-    print(f"Files skipped: {skipped}")
-print(f"Total windows: {total_windows}")
-print(f"Seizure windows: {final_labels.sum()} / {total_windows} "
-      f"({100 * final_labels.mean():.2f}%)")
-print(f"\nSaved to {final_windows_path}")
-print(f"Saved to {final_labels_path}")
+
+    print(
+        f"Files skipped: "
+        f"{skipped}"
+    )
+
+
+print(
+    f"Total windows: "
+    f"{total_windows}"
+)
+
+
+print(
+    f"Seizure windows: "
+    f"{final_labels.sum()} / "
+    f"{total_windows} "
+    f"({100 * final_labels.mean():.2f}%)"
+)
+
+
+print(
+    f"\nSaved windows to:"
+    f"\n{final_windows_path}"
+)
+
+
+print(
+    f"\nSaved labels to:"
+    f"\n{final_labels_path}"
+)
+
+
+print(
+    f"\nSaved file IDs to:"
+    f"\n{final_file_ids_path}"
+)
+
+
+print(
+    f"\nSaved file names to:"
+    f"\n{final_file_names_path}"
+)
+
+
+print(
+    f"\nSaved channel names to:"
+    f"\n{final_channel_names_path}"
+)
+
+
+print(
+    f"\nSaved metadata to:"
+    f"\n{final_metadata_path}"
+)
+
+
+print(
+    "\nPreprocessing completed successfully."
+)

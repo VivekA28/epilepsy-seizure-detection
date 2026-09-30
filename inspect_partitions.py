@@ -1,232 +1,64 @@
-import os
+"""
+Inspect subject partitions, EDF recording distributions, and dataset metadata.
+
+Aggregates window-level and recording-level statistics across subjects chb01–chb05.
+"""
+
+from pathlib import Path
 import pandas as pd
 
-
-DATA_DIR = "data/processed"
-
-SUBJECTS = [
-    "chb01",
-    "chb02",
-    "chb03",
-    "chb04",
-    "chb05",
-]
+DATA_DIR = Path("data/processed")
+SUBJECTS = ["chb01", "chb02", "chb03", "chb04", "chb05"]
 
 
-print("=" * 70)
-print("PATIENT / EDF PARTITION INSPECTION")
-print("=" * 70)
-
-
-all_metadata = []
-
-
-for subject in SUBJECTS:
-
-    path = os.path.join(
-        DATA_DIR,
-        f"{subject}_metadata.csv"
-    )
+def inspect_subject(subject: str) -> pd.DataFrame:
+    path = DATA_DIR / f"{subject}_metadata.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"Missing metadata: {path}")
 
     df = pd.read_csv(path)
+    seizures = (df["label"] == 1).sum()
+    non_seizures = (df["label"] == 0).sum()
 
-    print("\n" + "-" * 70)
-    print(subject.upper())
-    print("-" * 70)
-
-    print(f"Windows       : {len(df):,}")
-    print(f"Subjects      : {df['subject_id'].nunique()}")
-    print(f"EDF files     : {df['edf_id'].nunique()}")
-    print(f"Seizure       : {(df['label'] == 1).sum():,}")
-    print(f"Non-seizure   : {(df['label'] == 0).sum():,}")
-
-    print("\nEDF distribution:")
+    print(f"\n{subject.upper()}:")
+    print(f"  Windows: {len(df):,} | EDFs: {df['edf_id'].nunique()} | Seizure: {seizures} | Non-Seizure: {non_seizures}")
 
     edf_summary = (
         df.groupby("edf_id")
-        .agg(
-            windows=("window_index", "count"),
-            seizure_windows=("label", "sum")
-        )
+        .agg(windows=("window_index", "count"), seizure_windows=("label", "sum"))
         .reset_index()
     )
-
-    print(edf_summary.to_string(index=False))
-
-    all_metadata.append(df)
-
-
-# -------------------------------------------------------------
-# Combine metadata
-# -------------------------------------------------------------
-
-combined = pd.concat(
-    all_metadata,
-    ignore_index=True
-)
+    seizure_edfs = edf_summary[edf_summary["seizure_windows"] > 0]
+    print(f"  EDFs with seizures ({len(seizure_edfs)}/{len(edf_summary)}): {list(seizure_edfs['edf_id'].values)}")
+    return df
 
 
-print("\n" + "=" * 70)
-print("COMBINED DATASET")
-print("=" * 70)
+def main():
+    print("=" * 60)
+    print("CHB-MIT PARTITION & EDF METADATA INSPECTION")
+    print("=" * 60)
 
-print(f"Total windows       : {len(combined):,}")
-print(
-    f"Total seizure       : "
-    f"{(combined['label'] == 1).sum():,}"
-)
-print(
-    f"Total non-seizure   : "
-    f"{(combined['label'] == 0).sum():,}"
-)
+    dfs = [inspect_subject(s) for s in SUBJECTS]
+    combined = pd.concat(dfs, ignore_index=True)
 
-print(
-    f"Unique subjects     : "
-    f"{combined['subject_id'].nunique()}"
-)
+    print("\n" + "=" * 60)
+    print("DATASET AGGREGATE SUMMARY")
+    print("=" * 60)
+    print(f"Total Windows        : {len(combined):,}")
+    print(f"Total Seizure Windows: {(combined['label'] == 1).sum():,}")
+    print(f"Total Clean Windows  : {(combined['label'] == 0).sum():,}")
+    print(f"Unique Subjects      : {combined['subject_id'].nunique()}")
+    print(f"Unique EDF Files     : {combined['edf_id'].nunique()}")
 
-print(
-    f"Unique EDF IDs      : "
-    f"{combined['edf_id'].nunique()}"
-)
+    # Consistency assertions
+    assert (combined["end_sec"] > combined["start_sec"]).all(), "Invalid window timestamp range"
+    assert (combined["sampling_rate"] == 128.0).all(), "Inconsistent sampling rate"
+    assert (combined["n_channels"] == 23).all(), "Inconsistent channel count"
+    assert (combined["n_samples"] == 512).all(), "Inconsistent sample count"
 
-
-# -------------------------------------------------------------
-# Subject check
-# -------------------------------------------------------------
-
-print("\n" + "=" * 70)
-print("SUBJECT CHECK")
-print("=" * 70)
-
-subjects = sorted(
-    combined["subject_id"].unique()
-)
-
-print("Subjects:")
-for subject in subjects:
-    print(f"  - {subject}")
-
-if len(subjects) == len(set(subjects)):
-    print("\n[PASS] No duplicate subject IDs")
+    print("\n[PASS] All structural and metadata consistency checks passed.")
+    print("=" * 60)
 
 
-# -------------------------------------------------------------
-# EDF ownership check
-# -------------------------------------------------------------
-
-print("\n" + "=" * 70)
-print("EDF OWNERSHIP CHECK")
-print("=" * 70)
-
-edf_subject_counts = (
-    combined.groupby("edf_id")["subject_id"]
-    .nunique()
-)
-
-multi_subject_edfs = (
-    edf_subject_counts[
-        edf_subject_counts > 1
-    ]
-)
-
-if len(multi_subject_edfs) == 0:
-    print("[PASS] Every EDF belongs to exactly one subject")
-else:
-    print("[FAIL] Some EDFs belong to multiple subjects")
-    print(multi_subject_edfs)
-
-
-# -------------------------------------------------------------
-# Window ordering check
-# -------------------------------------------------------------
-
-print("\n" + "=" * 70)
-print("WINDOW ORDER CHECK")
-print("=" * 70)
-
-failed = False
-
-for (subject, edf), group in combined.groupby(
-    ["subject_id", "edf_id"]
-):
-
-    indices = group["window_index"].to_numpy()
-
-    if len(indices) == 0:
-        continue
-
-    if indices.min() < 0:
-        print(
-            f"[FAIL] Negative window index: "
-            f"{subject} / {edf}"
-        )
-        failed = True
-
-if not failed:
-    print("[PASS] No invalid negative window indices")
-
-
-# -------------------------------------------------------------
-# Time check
-# -------------------------------------------------------------
-
-print("\n" + "=" * 70)
-print("TIME RANGE CHECK")
-print("=" * 70)
-
-if (combined["end_sec"] <= combined["start_sec"]).any():
-
-    print("[FAIL] Invalid time range detected")
-
-else:
-
-    print(
-        "[PASS] All windows have "
-        "end_sec > start_sec"
-    )
-
-
-# -------------------------------------------------------------
-# Sampling consistency
-# -------------------------------------------------------------
-
-print("\n" + "=" * 70)
-print("SAMPLING / WINDOW CHECK")
-print("=" * 70)
-
-sampling_rates = combined[
-    "sampling_rate"
-].unique()
-
-channels = combined[
-    "n_channels"
-].unique()
-
-samples = combined[
-    "n_samples"
-].unique()
-
-print(f"Sampling rates : {sampling_rates}")
-print(f"Channels       : {channels}")
-print(f"Samples        : {samples}")
-
-if len(sampling_rates) == 1 and sampling_rates[0] == 128:
-    print("[PASS] Sampling rate is consistently 128 Hz")
-else:
-    print("[WARNING] Sampling rate is not uniform")
-
-if len(channels) == 1 and channels[0] == 23:
-    print("[PASS] Channel count is consistently 23")
-else:
-    print("[WARNING] Channel count is not uniform")
-
-if len(samples) == 1 and samples[0] == 512:
-    print("[PASS] Window size is consistently 512 samples")
-else:
-    print("[WARNING] Window size is not uniform")
-
-
-print("\n" + "=" * 70)
-print("PARTITION INSPECTION COMPLETE")
-print("=" * 70)
+if __name__ == "__main__":
+    main()

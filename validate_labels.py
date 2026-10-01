@@ -1,33 +1,62 @@
 """
-Validation of window, FFT feature, and label alignment for CHB-MIT EEG.
+Validation of Window, FFT Feature, and Label Alignment for CHB-MIT EEG.
 
 Ensures strict 1-to-1 index synchronization between preprocessed EEG windows,
 extracted FFT feature matrices, binary labels, and metadata tables.
+
+In a multimodal hybrid pipeline (e.g. 2D-CNN temporal feature extractor fused
+with 1D-FFT log band powers and LSTM sequence models), every index `i` across all
+representations must correspond to the exact same 4.0-second time interval.
+Any row misalignment would corrupt training supervision and evaluation.
 """
 
 from pathlib import Path
 import numpy as np
 import pandas as pd
 
+# Directory containing preprocessed data artifacts
 DATA_DIR = Path("data/processed")
 SUBJECTS = ["chb01", "chb02", "chb03", "chb04", "chb05"]
 
 
 def validate_subject_labels(subject: str) -> dict:
-    """Verify alignment across modalities for a single subject."""
+    """
+    Verify alignment across modalities and label representations for a single subject.
+
+    Parameters
+    ----------
+    subject : str
+        Subject identifier (e.g., 'chb01').
+
+    Returns
+    -------
+    dict
+        Dictionary containing counts for total windows, seizure windows,
+        and non-seizure baseline windows.
+
+    Raises
+    ------
+    AssertionError
+        If row counts diverge between representations or label values mismatch.
+    """
+    # Load arrays in memory-mapped read-only mode to prevent RAM bloat
     eeg = np.load(DATA_DIR / f"{subject}_windows.npy", mmap_mode="r")
     fft = np.load(DATA_DIR / f"{subject}_fft_features.npy", mmap_mode="r")
     labels = np.load(DATA_DIR / f"{subject}_labels.npy")
     metadata = pd.read_csv(DATA_DIR / f"{subject}_metadata.csv")
 
     n = len(eeg)
+
+    # Step 1: Verify row-dimension equality across all four artifacts
     assert len(fft) == n, f"{subject}: FFT rows ({len(fft)}) != EEG rows ({n})"
     assert len(labels) == n, f"{subject}: Labels count ({len(labels)}) != EEG rows ({n})"
     assert len(metadata) == n, f"{subject}: Metadata count ({len(metadata)}) != EEG rows ({n})"
 
+    # Step 2: Verify element-wise identity between standalone labels.npy and metadata['label']
     meta_labels = metadata["label"].to_numpy()
     assert np.array_equal(labels, meta_labels), f"{subject}: labels.npy != metadata labels"
 
+    # Step 3: Verify binary domain constraint (only {0, 1} classes permitted)
     unique_vals = set(np.unique(labels))
     assert unique_vals.issubset({0, 1}), f"{subject}: Unexpected label values: {unique_vals}"
 
@@ -42,6 +71,7 @@ def validate_subject_labels(subject: str) -> dict:
 
 
 def main():
+    """Execute cross-modal synchronization checks across all target subjects."""
     print("=" * 60)
     print("CHB-MIT MULTI-MODALITY ALIGNMENT VALIDATION")
     print("=" * 60)

@@ -8,7 +8,7 @@ Uses:
 
 Important:
     - Subject-wise train/validation/test split.
-    - EDF name is mapped to the processed EDF index, then local window_index maps to the EEG window.
+    - EDF ID + window_index used to map metadata to EEG windows.
     - Validation is used for model selection.
     - Test set is used ONLY for final evaluation.
     - EEG arrays remain memory-mapped on disk.
@@ -167,11 +167,9 @@ for subject in all_subjects:
     # EDF IDs are strings such as "chb01_01".
     # Convert the entire array to strings once so that
     # metadata and array EDF IDs use the same representation.
-    # file_ids.npy stores zero-based integer EDF indices
-    # (e.g. 0, 1, 2, ...), not EDF names.
     file_ids = np.asarray(
         np.load(file_ids_path)
-    ).astype(np.int32)
+    ).astype(str)
 
     if len(windows) != len(labels):
         raise ValueError(
@@ -192,91 +190,6 @@ for subject in all_subjects:
         f"{len(windows):,} windows | "
         f"{int(labels.sum()):,} seizure | "
         f"{len(np.unique(file_ids))} EDFs"
-    )
-
-
-# ============================================================
-# BUILD EDF NAME -> PROCESSED EDF INDEX MAPPING
-# ============================================================
-
-# IMPORTANT:
-# The original EDF filename number is NOT necessarily the same as
-# the integer stored in file_ids.npy.
-#
-# Example for CHB01:
-#   metadata EDFs:
-#       chb01_01, ..., chb01_27, chb01_29, ..., chb01_43, chb01_46
-#
-#   file_ids.npy:
-#       0, 1, 2, ..., 41
-#
-# This means some original EDF filenames were skipped during
-# preprocessing. Therefore we map EDF names to processed EDF
-# indices by their order in the metadata, rather than assuming:
-#       chb01_43 -> 42
-#
-# We also verify that every subject has the same number of
-# metadata EDFs and processed EDF IDs.
-
-all_metadata = pd.concat(
-    [train_meta, val_meta, test_meta],
-    ignore_index=True
-)
-
-edf_name_to_number = {}
-
-for subject in all_subjects:
-
-    subject_metadata = all_metadata[
-        all_metadata["subject_id"].astype(str) == str(subject)
-    ]
-
-    # Preserve the EDF order already present in metadata.
-    metadata_edfs = (
-        subject_metadata["edf_id"]
-        .astype(str)
-        .drop_duplicates()
-        .tolist()
-    )
-
-    processed_edf_numbers = sorted(
-        int(x)
-        for x in np.unique(file_ids_sources[subject])
-    )
-
-    if len(metadata_edfs) != len(processed_edf_numbers):
-        raise ValueError(
-            f"EDF count mismatch for {subject}: "
-            f"metadata has {len(metadata_edfs)} EDFs, "
-            f"but file_ids.npy has "
-            f"{len(processed_edf_numbers)} processed EDF IDs."
-        )
-
-    edf_name_to_number[subject] = {
-        edf_name: processed_edf_numbers[position]
-        for position, edf_name in enumerate(metadata_edfs)
-    }
-
-    # Verify every metadata EDF maps to a processed EDF.
-    mapped_values = list(
-        edf_name_to_number[subject].values()
-    )
-
-    if len(set(mapped_values)) != len(mapped_values):
-        raise ValueError(
-            f"Duplicate processed EDF mapping detected for {subject}."
-        )
-
-
-print("\nEDF mapping verification:")
-
-for subject in all_subjects:
-    mapping = edf_name_to_number[subject]
-
-    print(
-        f"  {subject}: "
-        f"{len(mapping)} metadata EDFs -> "
-        f"{len(set(mapping.values()))} processed EDF IDs"
     )
 
 
@@ -305,82 +218,80 @@ def metadata_to_indices(metadata, split_name):
         subject_file_ids = file_ids_sources[subject]
 
         # ----------------------------------------------------
-        # Map the original EDF name to the actual processed EDF
-        # index. Do NOT derive the index from the filename number,
-        # because preprocessing may skip incompatible EDF files.
+        # Verify that this EDF actually exists for the subject.
+        # EDF IDs are strings such as "chb01_01".
         # ----------------------------------------------------
 
-        if subject not in edf_name_to_number:
-            raise ValueError(
-                f"{split_name}: no EDF mapping found for {subject}."
-            )
-
-        if edf_id not in edf_name_to_number[subject]:
-            raise ValueError(
-                f"{split_name}: EDF {edf_id} has no processed "
-                f"EDF mapping for {subject}."
-            )
-
-        edf_number = edf_name_to_number[subject][edf_id]
-
-        # ----------------------------------------------------
-        # Find every window belonging to this EDF.
-        # ----------------------------------------------------
-
-        edf_indices = np.where(
-            subject_file_ids == edf_number
+        matching_indices = np.where(
+            subject_file_ids == edf_id
         )[0]
 
-        if len(edf_indices) == 0:
+        if len(matching_indices) == 0:
             raise ValueError(
-                f"{split_name}: EDF {edf_id} "
-                f"(processed index {edf_number}) not found for {subject}."
+                f"{split_name}: EDF {edf_id} not found for {subject}."
             )
 
         # ----------------------------------------------------
-        # IMPORTANT:
-        # window_index is LOCAL to the EDF.
-        #
-        # Example:
-        #   chb01_01, window_index=0
-        #   chb01_01, window_index=1
-        #   ...
-        #   chb01_02, window_index=0
-        #
-        # The second EDF therefore starts its own window_index
-        # again at 0.
+        # First interpretation:
+        # window_index is a global subject-level index.
+        # This is the format used by our partition metadata.
         # ----------------------------------------------------
 
-        if window_index < 0 or window_index >= len(edf_indices):
+        global_index = window_index
+
+        if global_index < 0:
             raise ValueError(
-                f"{split_name}: window_index {window_index} "
-                f"out of range for {subject}, {edf_id}. "
-                f"EDF contains {len(edf_indices)} windows."
+                f"Invalid window index: {global_index}"
             )
 
-        # Convert local EDF window index to the actual global
-        # position in the subject's windows.npy array.
-        global_index = int(
-            edf_indices[window_index]
-        )
+        if global_index >= len(labels_sources[subject]):
+            raise ValueError(
+                f"{split_name}: window index {global_index} "
+                f"out of range for {subject}."
+            )
 
-        # ----------------------------------------------------
-        # Final EDF mapping verification.
-        # ----------------------------------------------------
-
-        actual_edf_number = int(
+        actual_edf_id = str(
             subject_file_ids[global_index]
         )
 
-        if actual_edf_number != edf_number:
-            raise ValueError(
-                f"{split_name}: EDF mapping failed for "
-                f"{subject}, {edf_id}, "
-                f"window {window_index}."
+        # ----------------------------------------------------
+        # If the global interpretation does not match the EDF,
+        # fall back to treating window_index as the local
+        # position inside that EDF.
+        # ----------------------------------------------------
+
+        if actual_edf_id != edf_id:
+
+            edf_indices = np.where(
+                subject_file_ids == edf_id
+            )[0]
+
+            if window_index >= len(edf_indices):
+                raise ValueError(
+                    f"{split_name}: cannot map "
+                    f"{subject}, EDF {edf_id}, "
+                    f"window {window_index}"
+                )
+
+            global_index = int(
+                edf_indices[window_index]
             )
 
+            actual_edf_id = str(
+                subject_file_ids[global_index]
+            )
+
+            if actual_edf_id != edf_id:
+                raise ValueError(
+                    f"{split_name}: EDF mapping failed for "
+                    f"{subject}, EDF {edf_id}, "
+                    f"window {window_index}"
+                )
+
         # ----------------------------------------------------
-        # Verify the stored EEG label against metadata.
+        # Verify label.
+        # This is critical: metadata label must exactly match
+        # the label stored with the EEG window.
         # ----------------------------------------------------
 
         actual_label = int(
@@ -406,9 +317,7 @@ def metadata_to_indices(metadata, split_name):
             (subject, global_index)
         )
 
-        labels.append(
-            actual_label
-        )
+        labels.append(actual_label)
 
     if mismatches > 0:
         raise ValueError(
@@ -418,10 +327,7 @@ def metadata_to_indices(metadata, split_name):
 
     return (
         indices,
-        np.asarray(
-            labels,
-            dtype=np.float32
-        )
+        np.asarray(labels, dtype=np.float32)
     )
 
 

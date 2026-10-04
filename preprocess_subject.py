@@ -1,318 +1,3633 @@
 """
-Preprocessing Pipeline for CHB-MIT Scalp EEG.
 
-Processes continuous EDF recordings for a given subject into standardized,
-leakage-free windowed datasets:
-  - Downsampling: 256 Hz -> 128 Hz. Preserves physiological frequencies up to
-    Nyquist (64 Hz) while cutting memory and compute requirements by half.
-  - Powerline Notch Filter: 60 Hz notch filter to eliminate AC mains interference.
-  - Bandpass Filter: 0.5–40.0 Hz bandpass to eliminate low-frequency baseline
-    drift (<0.5 Hz, e.g., sweating, movement) and high-frequency noise (>40.0 Hz, e.g., EMG).
-  - Per-Channel Normalization: Per-recording per-channel z-score standardization.
-    Removes inter-electrode amplitude bias without leaking test statistics across recordings
-    or confounding explainability (SHAP/LIME attribution).
-  - Windowing: 4-second windows (512 samples) with 50% overlap (2-second step) to capture
-    sustained electrographic rhythmic seizure discharges with temporal fidelity.
-  - Seizure Labeling: Binary label 1 if any portion of the window intersects an
-    annotated seizure onset/offset interval from the clinical summary report.
-  - Memory-Safe Streaming: Two-phase pipeline that processes one EDF file at a time,
-    writes temporary chunks to disk, and consolidates them into a contiguous memory-mapped
-    NumPy array to prevent out-of-memory (OOM) failures on large subjects.
-  - Metadata Tracking: Retains recording ID, window indices, timestamps, and channel labels
-    to ensure patient-specific and recording-specific splits without data leakage.
+
+
+Preprocessing step 2: filtering + windowing across an entire subject
+
+
+
+folder (all EDF files for one subject, e.g. all of chb01), combined
+
+
+
+into a single dataset.
+
+
+
+Processes one file at a time and writes each file's result straight to
+
+
+
+disk before moving to the next, rather than keeping every file's data
+
+
+
+in memory simultaneously.
+
+
+
+The final combined dataset is also built on disk using a memory-mapped
+
+
+
+array instead of loading everything into RAM.
+
+
+
+Current development subjects:
+
+
+
+    chb01
+
+
+
+    chb02
+
+
+
+    chb03
+
+
+
+    chb04
+
+
+
+    chb05
+
+
+
+Run from the project root:
+
+
+
+    python preprocess_subject.py chb01
+
+
+
+    python preprocess_subject.py chb02
+
+
+
+    ...
+
+
+
+The existing preprocessing behaviour is preserved:
+
+
+
+    256 Hz -> 128 Hz
+
+
+
+    60 Hz notch
+
+
+
+    0.5-40 Hz bandpass
+
+
+
+    per-channel z-score normalization
+
+
+
+    4-second windows
+
+
+
+    50% overlap
+
+
+
 """
 
+
+
 import sys
+
+
+
 import gc
+
+
+
 import shutil
+
+
+
 import re
-from pathlib import Path
-from typing import List, Tuple
+
+
 
 import mne
+
+
+
 import numpy as np
+
+
+
 import pandas as pd
 
-# Target subject from CLI arguments (default: 'chb01')
-SUBJECT = sys.argv[1] if len(sys.argv) > 1 else "chb01"
-DATA_DIR = Path(f"data/raw/{SUBJECT}")
-SUMMARY_FILE = DATA_DIR / f"{SUBJECT}-summary.txt"
-OUT_DIR = Path("data/processed")
-TMP_DIR = OUT_DIR / f"_tmp_{SUBJECT}"
-
-# Signal processing hyper-parameters
-NOTCH_FREQ = 60.0       # AC powerline frequency in North America (Hz)
-BANDPASS_LOW = 0.5      # High-pass cutoff to remove DC drift and sweating artifacts (Hz)
-BANDPASS_HIGH = 40.0    # Low-pass cutoff to remove EMG and high-frequency noise (Hz)
-WINDOW_SEC = 4          # Window duration in seconds (4s * 128 Hz = 512 samples)
-WINDOW_OVERLAP = 0.5    # 50% overlap between successive windows (2.0s step)
 
 
-def parse_seizures_for_file(summary_path: Path, target_filename: str) -> List[Tuple[int, int]]:
+from pathlib import Path
+
+
+
+# =====================================================================
+
+
+
+# 1. Configuration
+
+
+
+# =====================================================================
+
+
+
+SUBJECT = (
+
+
+
+    sys.argv[1]
+
+
+
+    if len(sys.argv) > 1
+
+
+
+    else "chb01"
+
+
+
+)
+
+
+
+DATA_DIR = Path(
+
+
+
+    f"data/raw/{SUBJECT}"
+
+
+
+)
+
+
+
+SUMMARY_FILE = (
+
+
+
+    DATA_DIR / f"{SUBJECT}-summary.txt"
+
+
+
+)
+
+
+
+# Existing preprocessing settings
+
+
+
+NOTCH_FREQ = 60.0
+
+
+
+BANDPASS_LOW = 0.5
+
+
+
+BANDPASS_HIGH = 40.0
+
+
+
+WINDOW_SEC = 4
+
+
+
+WINDOW_OVERLAP = 0.5
+
+
+
+# Temporary directory for per-EDF results
+
+
+
+TMP_DIR = Path(
+
+
+
+    f"data/processed/_tmp_{SUBJECT}"
+
+
+
+)
+
+
+
+TMP_DIR.mkdir(
+
+
+
+    parents=True,
+
+
+
+    exist_ok=True
+
+
+
+)
+
+
+
+# =====================================================================
+
+
+
+# 2. Parse seizure annotations
+
+
+
+# =====================================================================
+
+
+
+def parse_seizures_for_file(
+
+
+
+    summary_path: Path,
+
+
+
+    target_filename: str
+
+
+
+):
+
+
+
     """
-    Parse annotated seizure onset and offset timestamps (in seconds) for one EDF file.
 
-    Parameters
-    ----------
-    summary_path : Path
-        Path to the CHB-MIT clinical summary text file (e.g., chb01-summary.txt).
-    target_filename : str
-        Base EDF filename being queried (e.g., 'chb01_03.edf').
 
-    Returns
-    -------
-    list of tuple of (int, int)
-        List of (start_sec, end_sec) intervals corresponding to documented seizures.
+
+    Read seizure start/end times for one EDF file
+
+
+
+    from the CHB-MIT summary file.
+
+
+
+    Returns:
+
+
+
+        List of tuples:
+
+
+
+        [
+
+
+
+            (start_seconds, end_seconds),
+
+
+
+            ...
+
+
+
+        ]
+
+
+
     """
+
+
+
     text = summary_path.read_text()
+
+
+
     chunks = text.split("File Name:")
+
+
+
     seizures = []
+
+
+
     for chunk in chunks:
-        if target_filename not in chunk.split("\n")[0]:
+
+
+
+        first_line = (
+
+
+
+            chunk.split("\n")[0]
+
+
+
+        )
+
+
+
+        if target_filename not in first_line:
+
+
+
             continue
-        # CHB-MIT summary files use either singular or numbered seizure labels
-        starts = re.findall(r"Seizure Start Time:\s*(\d+)\s*seconds", chunk)
-        ends = re.findall(r"Seizure End Time:\s*(\d+)\s*seconds", chunk)
+
+
+
+        starts = re.findall(
+
+
+
+            r"Seizure Start Time:\s*(\d+)\s*seconds",
+
+
+
+            chunk
+
+
+
+        )
+
+
+
+        ends = re.findall(
+
+
+
+            r"Seizure End Time:\s*(\d+)\s*seconds",
+
+
+
+            chunk
+
+
+
+        )
+
+
+
+        # Support alternate CHB-MIT annotation format
+
+
+
         if not starts:
-            starts = re.findall(r"Seizure \d+ Start Time:\s*(\d+)\s*seconds", chunk)
-            ends = re.findall(r"Seizure \d+ End Time:\s*(\d+)\s*seconds", chunk)
+
+
+
+            starts = re.findall(
+
+
+
+                r"Seizure \d+ Start Time:\s*(\d+)\s*seconds",
+
+
+
+                chunk
+
+
+
+            )
+
+
+
+            ends = re.findall(
+
+
+
+                r"Seizure \d+ End Time:\s*(\d+)\s*seconds",
+
+
+
+                chunk
+
+
+
+            )
+
+
+
         for s, e in zip(starts, ends):
-            seizures.append((int(s), int(e)))
+
+
+
+            seizures.append(
+
+
+
+                (
+
+
+
+                    int(s),
+
+
+
+                    int(e)
+
+
+
+                )
+
+
+
+            )
+
+
+
     return seizures
 
 
+
+# =====================================================================
+
+
+
+# 3. Create EEG windows
+
+
+
+# =====================================================================
+
+
+
 def make_windows(
-    data: np.ndarray,
-    sfreq: float,
-    window_sec: float,
-    overlap: float,
-    seizure_times: List[Tuple[int, int]],
+
+
+
+    data,
+
+
+
+    sfreq,
+
+
+
+    window_sec,
+
+
+
+    overlap,
+
+
+
+    seizure_times
+
+
+
 ):
+
+
+
     """
-    Segment continuous multi-channel recording into fixed-length overlapping windows.
 
-    A window is assigned a binary label of 1 if any part of its time span overlaps
-    with an annotated clinical seizure onset/offset interval; otherwise 0.
 
-    Parameters
-    ----------
-    data : np.ndarray
-        Multi-channel EEG array of shape (n_channels, n_samples).
-    sfreq : float
-        Sampling frequency in Hz (typically 128.0).
-    window_sec : float
-        Window duration in seconds (typically 4.0).
-    overlap : float
-        Fractional overlap between successive windows (typically 0.5 = 50%).
-    seizure_times : list of tuple of (int, int)
-        Ground-truth (start_sec, end_sec) intervals for clinical seizures.
 
-    Returns
-    -------
-    windows : np.ndarray
-        Window tensor of shape (n_windows, n_channels, win_len) in float32.
-    labels : np.ndarray
-        Binary seizure label vector of shape (n_windows,) in int8.
-    start_times : np.ndarray
-        Window onset timestamp in seconds from recording start.
-    end_times : np.ndarray
-        Window offset timestamp in seconds from recording start.
-    window_indices : np.ndarray
-        Sequential window indices (0 to n_windows - 1) within this EDF.
+    Split one preprocessed EDF recording into overlapping windows.
+
+
+
+    Input:
+
+
+
+        data:
+
+
+
+            Shape = (channels, samples)
+
+
+
+        sfreq:
+
+
+
+            Sampling frequency after preprocessing.
+
+
+
+        window_sec:
+
+
+
+            Window length in seconds.
+
+
+
+        overlap:
+
+
+
+            Fractional overlap.
+
+
+
+        seizure_times:
+
+
+
+            List of seizure intervals.
+
+
+
+    Returns:
+
+
+
+        windows:
+
+
+
+            Shape = (n_windows, channels, samples)
+
+
+
+        labels:
+
+
+
+            Shape = (n_windows,)
+
+
+
+        start_times:
+
+
+
+            Start time of every window in seconds.
+
+
+
+        end_times:
+
+
+
+            End time of every window in seconds.
+
+
+
+        window_indices:
+
+
+
+            Chronological index of every window.
+
+
+
     """
-    win_len = int(window_sec * sfreq)
-    step = int(win_len * (1 - overlap))
-    n_samples = data.shape[1]
 
-    windows, labels = [], []
-    start_times, end_times, window_indices = [], [], []
 
-    idx = 0
-    for start_sample in range(0, n_samples - win_len + 1, step):
-        end_sample = start_sample + win_len
-        start_sec = start_sample / sfreq
-        end_sec = end_sample / sfreq
 
-        # Check for any temporal intersection between window and known seizure intervals
-        label = 0
-        for s_start, s_end in seizure_times:
-            if start_sec < s_end and end_sec > s_start:
-                label = 1
-                break
+    # Number of samples in one window
 
-        windows.append(data[:, start_sample:end_sample])
-        labels.append(label)
-        start_times.append(start_sec)
-        end_times.append(end_sec)
-        window_indices.append(idx)
-        idx += 1
 
-    return (
-        np.array(windows, dtype=np.float32),
-        np.array(labels, dtype=np.int8),
-        np.array(start_times, dtype=np.float32),
-        np.array(end_times, dtype=np.float32),
-        np.array(window_indices, dtype=np.int32),
+
+    win_len = int(
+
+
+
+        window_sec * sfreq
+
+
+
     )
 
 
-def main():
-    """Main preprocessing workflow for the selected subject."""
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-    edf_files = sorted(DATA_DIR.glob("*.edf"))
-    print(f"Found {len(edf_files)} EDF files for {SUBJECT}")
+    # For 50% overlap:
 
-    reference_n_channels = None
-    reference_channel_names = None
-    saved_chunks = []
-    skipped = []
 
-    # Phase 1: Process each continuous EDF recording individually
-    for i, edf_file in enumerate(edf_files, 1):
-        try:
-            # Read EDF header and signal traces using MNE
-            raw = mne.io.read_raw_edf(edf_file, preload=True, verbose=False)
 
-            # 1. Resample: 256 Hz -> 128 Hz (seizure rhythms lie well below 40 Hz)
-            raw.resample(128, verbose=False)
-            # 2. Notch filter: Remove 60 Hz AC electrical mains interference
-            raw.notch_filter(freqs=NOTCH_FREQ, n_jobs=1, verbose=False)
-            # 3. Bandpass filter: Retain 0.5–40 Hz physiological EEG rhythms
-            raw.filter(l_freq=BANDPASS_LOW, h_freq=BANDPASS_HIGH, n_jobs=1, verbose=False)
+    #
 
-            sfreq = raw.info["sfreq"]
-            data = raw.get_data().astype(np.float32)
-            channel_names = list(raw.ch_names)
 
-            # 4. Per-channel z-score normalization per recording:
-            # Standardizes electrode scales to zero mean and unit variance.
-            # Eliminates cross-session impedance differences without leaking data.
-            ch_mean = data.mean(axis=1, keepdims=True)
-            ch_std = data.std(axis=1, keepdims=True)
-            data = (data - ch_mean) / (ch_std + 1e-8)
 
-            # Enforce consistent electrode channel montage across all EDFs of the subject
-            if reference_n_channels is None:
-                reference_n_channels = data.shape[0]
-                reference_channel_names = channel_names
-            elif data.shape[0] != reference_n_channels:
-                print(f"  [{i}/{len(edf_files)}] {edf_file.name}: SKIPPED (channel count mismatch)")
+    # 4 sec window
+
+
+
+    # 50% overlap
+
+
+
+    #
+
+
+
+    # stride = 2 sec
+
+
+
+    step = int(
+
+
+
+        win_len * (1 - overlap)
+
+
+
+    )
+
+
+
+    n_samples = data.shape[1]
+
+
+
+    windows = []
+
+
+
+    labels = []
+
+
+
+    start_times = []
+
+
+
+    end_times = []
+
+
+
+    window_indices = []
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    # Generate windows chronologically
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    for window_idx, start_sample in enumerate(
+
+
+
+        range(
+
+
+
+            0,
+
+
+
+            n_samples - win_len + 1,
+
+
+
+            step
+
+
+
+        )
+
+
+
+    ):
+
+
+
+        end_sample = (
+
+
+
+            start_sample + win_len
+
+
+
+        )
+
+
+
+        start_sec = (
+
+
+
+            start_sample / sfreq
+
+
+
+        )
+
+
+
+        end_sec = (
+
+
+
+            end_sample / sfreq
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Determine seizure label
+
+
+
+        #
+
+
+
+        # A window is labelled seizure if it overlaps
+
+
+
+        # with any seizure interval.
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        label = 0
+
+
+
+        for (
+
+
+
+            s_start,
+
+
+
+            s_end
+
+
+
+        ) in seizure_times:
+
+
+
+            if (
+
+
+
+                start_sec < s_end
+
+
+
+                and
+
+
+
+                end_sec > s_start
+
+
+
+            ):
+
+
+
+                label = 1
+
+
+
+                break
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Store window
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        windows.append(
+
+
+
+            data[
+
+
+
+                :,
+
+
+
+                start_sample:end_sample
+
+
+
+            ]
+
+
+
+        )
+
+
+
+        labels.append(
+
+
+
+            label
+
+
+
+        )
+
+
+
+        start_times.append(
+
+
+
+            start_sec
+
+
+
+        )
+
+
+
+        end_times.append(
+
+
+
+            end_sec
+
+
+
+        )
+
+
+
+        window_indices.append(
+
+
+
+            window_idx
+
+
+
+        )
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    # Convert to memory-efficient NumPy arrays
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    windows = np.array(
+
+
+
+        windows,
+
+
+
+        dtype=np.float32
+
+
+
+    )
+
+
+
+    labels = np.array(
+
+
+
+        labels,
+
+
+
+        dtype=np.int8
+
+
+
+    )
+
+
+
+    start_times = np.array(
+
+
+
+        start_times,
+
+
+
+        dtype=np.float32
+
+
+
+    )
+
+
+
+    end_times = np.array(
+
+
+
+        end_times,
+
+
+
+        dtype=np.float32
+
+
+
+    )
+
+
+
+    window_indices = np.array(
+
+
+
+        window_indices,
+
+
+
+        dtype=np.int32
+
+
+
+    )
+
+
+
+    return (
+
+
+
+        windows,
+
+
+
+        labels,
+
+
+
+        start_times,
+
+
+
+        end_times,
+
+
+
+        window_indices
+
+
+
+    )
+
+
+
+# =====================================================================
+
+
+
+# 4. Find EDF files
+
+
+
+# =====================================================================
+
+
+
+edf_files = sorted(
+
+
+
+    DATA_DIR.glob("*.edf")
+
+
+
+)
+
+
+
+print(
+
+
+
+    f"Found {len(edf_files)} EDF files "
+
+
+
+    f"for {SUBJECT}"
+
+
+
+)
+
+
+
+# =====================================================================
+
+
+
+# 5. Variables used during processing
+
+
+
+# =====================================================================
+
+
+
+reference_n_channels = None
+
+
+
+# Keep track of successfully processed files
+
+
+
+saved_chunks = []
+
+
+
+# Keep track of skipped files
+
+
+
+skipped = []
+
+
+
+# Store channel names from the first valid EDF
+
+
+
+reference_channel_names = None
+
+
+
+# =====================================================================
+
+
+
+# 6. Process each EDF file
+
+
+
+# =====================================================================
+
+
+
+for i, edf_file in enumerate(
+
+
+
+    edf_files,
+
+
+
+    1
+
+
+
+):
+
+
+
+    try:
+
+
+
+        print(
+
+
+
+            f"\n[{i}/{len(edf_files)}] "
+
+
+
+            f"Processing {edf_file.name}"
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Load EDF
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        raw = mne.io.read_raw_edf(
+
+
+
+            edf_file,
+
+
+
+            preload=True,
+
+
+
+            verbose=False
+
+
+
+        )
+
+        # ---------------------------------------------------------
+
+        # Remove non-standard extra channels
+
+        #
+
+        # CHB09 contains an additional VNS channel.
+
+        # CHB12-CHB14 contain five EDF channels whose original
+
+        # labels are "-" (MNE renames them to --0 ... --4).
+
+        #
+
+        # The project uses a fixed 23-channel EEG representation.
+
+        # Remove only these documented extra channels.
+
+        # ---------------------------------------------------------
+
+
+
+        extra_channels = []
+
+
+
+        if "VNS" in raw.ch_names:
+
+            extra_channels.append("VNS")
+
+
+
+        dash_channels = [
+
+            ch for ch in raw.ch_names
+
+            if ch == "-" or ch.startswith("--")
+
+        ]
+
+
+
+        extra_channels.extend(dash_channels)
+
+
+
+        if extra_channels:
+
+            print(
+
+                f"  Removing extra channels from "
+
+                f"{edf_file.name}: {extra_channels}"
+
+            )
+
+            raw.drop_channels(extra_channels)
+
+
+
+
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Remove extra VNS channel in CHB09
+
+
+
+        #
+
+
+
+        # CHB09 files after chb09_01 contain the same 23 EEG
+
+
+
+        # channels plus an additional VNS channel.
+
+
+
+        #
+
+
+
+        # For this project, we keep the fixed 23-channel EEG
+
+
+
+        # representation and exclude only this extra channel.
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        if "VNS" in raw.ch_names:
+
+
+
+            print(
+
+
+
+                f"  Removing extra VNS channel from "
+
+
+
+                f"{edf_file.name}"
+
+
+
+            )
+
+
+
+            raw.drop_channels(["VNS"])
+
+
+
+        # ---------------------------------------------------------
+
+        # CHB12-specific channel layout validation
+
+        #
+
+        # CHB12 contains several different recording layouts. We only
+
+        # keep recordings whose remaining EEG channels match the fixed
+
+        # 23-channel bipolar representation used by this project.
+
+        #
+
+        # MNE renames the two duplicate EDF labels "T8-P8" to
+
+        # "T8-P8-0" and "T8-P8-1". These are the two expected
+
+        # T8-P8 positions. We canonicalize those names only for
+
+        # validation; the raw data/channel positions are unchanged.
+
+        #
+
+        # CHB12_32-42 additionally contain LOC-ROC, which is removed
+
+        # because it is not part of the fixed 23-channel EEG layout.
+
+        #
+
+        # CHB12_27 (-CS2 montage) and CHB12_28/29 (single-electrode
+
+        # layout) fail this exact check and are skipped.
+
+        # ---------------------------------------------------------
+
+
+
+        if SUBJECT.lower() == "chb12":
+
+            if "LOC-ROC" in raw.ch_names:
+
+                print(
+
+                    f"  Removing auxiliary channel from "
+
+                    f"{edf_file.name}: LOC-ROC"
+
+                )
+
+                raw.drop_channels(["LOC-ROC"])
+
+
+
+            chb12_target_channels = [
+
+                "FP1-F7",
+
+                "F7-T7",
+
+                "T7-P7",
+
+                "P7-O1",
+
+                "FP1-F3",
+
+                "F3-C3",
+
+                "C3-P3",
+
+                "P3-O1",
+
+                "FZ-CZ",
+
+                "CZ-PZ",
+
+                "FP2-F4",
+
+                "F4-C4",
+
+                "C4-P4",
+
+                "P4-O2",
+
+                "FP2-F8",
+
+                "F8-T8",
+
+                "T8-P8",
+
+                "P8-O2",
+
+                "P7-T7",
+
+                "T7-FT9",
+
+                "FT9-FT10",
+
+                "FT10-T8",
+
+                "T8-P8",
+
+            ]
+
+
+
+            canonical_channel_names = [
+
+                (
+
+                    "T8-P8"
+
+                    if ch in {"T8-P8-0", "T8-P8-1"}
+
+                    else ch
+
+                )
+
+                for ch in raw.ch_names
+
+            ]
+
+
+
+            if canonical_channel_names != chb12_target_channels:
+
+                print(
+
+                    "  SKIPPED: incompatible CHB12 channel "
+
+                    "layout/montage."
+
+                )
+
+                print(
+
+                    f"  Remaining channels: {raw.ch_names}"
+
+                )
+
+                print(
+
+                    "  Expected 23-channel logical layout: "
+
+                    f"{chb12_target_channels}"
+
+                )
+
                 skipped.append(edf_file.name)
-                del raw, data
+
+                del raw
+
+                gc.collect()
+
+                continue
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # ---------------------------------------------------------
+        # CHB15-specific channel handling
+        #
+        # CHB15 recordings contain the same 23-channel scalp EEG
+        # layout plus auxiliary/reference channels. Some recordings
+        # also contain PZ-OZ, which is not part of our fixed 23-channel
+        # target layout. Remove only these verified auxiliary channels.
+        # T8-P8 duplicates are canonicalized only for validation; raw
+        # channel positions/data are not reordered.
+        # ---------------------------------------------------------
+
+        if SUBJECT.lower() == "chb15":
+
+            auxiliary_channels = [
+                ch for ch in raw.ch_names
+                if ch.endswith("-Ref")
+            ]
+
+            if "PZ-OZ" in raw.ch_names:
+                auxiliary_channels.append("PZ-OZ")
+
+            if auxiliary_channels:
+                print(
+                    f"  Removing auxiliary channels from "
+                    f"{edf_file.name}: {auxiliary_channels}"
+                )
+                raw.drop_channels(auxiliary_channels)
+
+            chb15_target_channels = [
+                "FP1-F7", "F7-T7", "T7-P7", "P7-O1",
+                "FP1-F3", "F3-C3", "C3-P3", "P3-O1",
+                "FZ-CZ", "CZ-PZ",
+                "FP2-F4", "F4-C4", "C4-P4", "P4-O2",
+                "FP2-F8", "F8-T8", "T8-P8", "P8-O2",
+                "P7-T7", "T7-FT9", "FT9-FT10", "FT10-T8", "T8-P8",
+            ]
+
+            canonical_channel_names = [
+                "T8-P8" if ch in {"T8-P8-0", "T8-P8-1"} else ch
+                for ch in raw.ch_names
+            ]
+
+            if canonical_channel_names != chb15_target_channels:
+                print("  SKIPPED: incompatible CHB15 channel layout/montage.")
+                print(f"  Remaining channels: {raw.ch_names}")
+                print(
+                    "  Expected 23-channel logical layout: "
+                    f"{chb15_target_channels}"
+                )
+                skipped.append(edf_file.name)
+                del raw
                 gc.collect()
                 continue
 
-            # 5. Extract annotated seizure timestamps and slice into 4s overlapping windows
-            seizure_times = parse_seizures_for_file(SUMMARY_FILE, edf_file.name)
-            windows, labels, start_times, end_times, window_indices = make_windows(
-                data, sfreq, WINDOW_SEC, WINDOW_OVERLAP, seizure_times
+
+
+        # Resample:
+
+
+
+        #
+
+
+
+        # 256 Hz -> 128 Hz
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        raw.resample(
+
+
+
+            128,
+
+
+
+            verbose=False
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Notch filter
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        raw.notch_filter(
+
+
+
+            freqs=NOTCH_FREQ,
+
+
+
+            n_jobs=1,
+
+
+
+            verbose=False
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Bandpass filter
+
+
+
+        #
+
+
+
+        # 0.5 Hz -> 40 Hz
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        raw.filter(
+
+
+
+            l_freq=BANDPASS_LOW,
+
+
+
+            h_freq=BANDPASS_HIGH,
+
+
+
+            n_jobs=1,
+
+
+
+            verbose=False
+
+
+
+        )
+
+
+
+        # Sampling frequency after resampling
+
+
+
+        sfreq = raw.info["sfreq"]
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Get channel names
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        channel_names = list(
+
+
+
+            raw.ch_names
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Get EEG data
+
+
+
+        #
+
+
+
+        # Shape:
+
+
+
+        #
+
+
+
+        # (channels, samples)
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        data = raw.get_data().astype(
+
+
+
+            np.float32
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Check channel count
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        if reference_n_channels is None:
+
+
+
+            reference_n_channels = (
+
+
+
+                data.shape[0]
+
+
+
             )
 
-            # 6. Cache per-file chunks immediately to disk to minimize memory consumption
-            stem = edf_file.stem
-            np.save(TMP_DIR / f"{stem}_windows.npy", windows)
-            np.save(TMP_DIR / f"{stem}_labels.npy", labels)
-            np.save(TMP_DIR / f"{stem}_starts.npy", start_times)
-            np.save(TMP_DIR / f"{stem}_ends.npy", end_times)
-            np.save(TMP_DIR / f"{stem}_indices.npy", window_indices)
-            saved_chunks.append(stem)
 
-            print(f"  [{i}/{len(edf_files)}] {edf_file.name}: {len(windows):,} windows, {labels.sum()} seizure")
 
-            del raw, data, windows, labels
+            reference_channel_names = (
+
+
+
+                channel_names
+
+
+
+            )
+
+
+
+        elif (
+
+
+
+            data.shape[0]
+
+
+
+            != reference_n_channels
+
+
+
+        ):
+
+
+
+            print(
+
+
+
+                f"  SKIPPED: channel count "
+
+
+
+                f"{data.shape[0]} != "
+
+
+
+                f"expected "
+
+
+
+                f"{reference_n_channels}"
+
+
+
+            )
+
+
+
+            skipped.append(
+
+
+
+                edf_file.name
+
+
+
+            )
+
+
+
+            del raw
+
+
+
+            del data
+
+
+
             gc.collect()
 
-        except Exception as e:
-            print(f"  [{i}/{len(edf_files)}] {edf_file.name}: SKIPPED (error: {e})")
-            skipped.append(edf_file.name)
 
-    # Phase 2: Consolidate cached chunks into a contiguous disk-backed memory-mapped array
-    print(f"\nCombining {len(saved_chunks)} saved chunks into memory-mapped array...")
-    total_windows = 0
-    sample_shape = None
-    for stem in saved_chunks:
-        w = np.load(TMP_DIR / f"{stem}_windows.npy", mmap_mode="r")
-        total_windows += len(w)
-        if sample_shape is None:
-            sample_shape = w.shape[1:]
-        del w
 
-    final_windows_path = OUT_DIR / f"{SUBJECT}_windows.npy"
-    final_labels_path = OUT_DIR / f"{SUBJECT}_labels.npy"
-    final_file_ids_path = OUT_DIR / f"{SUBJECT}_file_ids.npy"
-    final_metadata_path = OUT_DIR / f"{SUBJECT}_metadata.csv"
-    final_channel_names_path = OUT_DIR / f"{SUBJECT}_channel_names.txt"
+            continue
 
-    # Pre-allocate contiguous disk buffer for multi-channel windows
-    final_windows = np.lib.format.open_memmap(
-        final_windows_path, mode="w+", dtype=np.float32, shape=(total_windows, *sample_shape)
-    )
-    final_labels = np.zeros(total_windows, dtype=np.int8)
-    final_file_ids = np.zeros(total_windows, dtype=np.int32)
 
-    metadata_rows = []
-    offset = 0
 
-    # Stream cached chunks into final array and build complete metadata registry
-    for file_idx, stem in enumerate(saved_chunks):
-        w = np.load(TMP_DIR / f"{stem}_windows.npy")
-        l = np.load(TMP_DIR / f"{stem}_labels.npy")
-        starts = np.load(TMP_DIR / f"{stem}_starts.npy")
-        ends = np.load(TMP_DIR / f"{stem}_ends.npy")
-        indices = np.load(TMP_DIR / f"{stem}_indices.npy")
-        n = len(w)
+        # ---------------------------------------------------------
 
-        final_windows[offset:offset + n] = w
-        final_labels[offset:offset + n] = l
-        final_file_ids[offset:offset + n] = file_idx
 
-        for j in range(n):
-            metadata_rows.append({
-                "dataset_id": "chbmit",
-                "subject_id": SUBJECT,
-                "edf_id": stem,
-                "window_index": int(indices[j]),
-                "start_sec": float(starts[j]),
-                "end_sec": float(ends[j]),
-                "label": int(l[j]),
-                "sampling_rate": 128.0,
-                "n_channels": int(w.shape[1]),
-                "n_samples": int(w.shape[2]),
-            })
 
-        offset += n
-        del w, l, starts, ends, indices
+        # Check channel ordering
+
+
+
+        #
+
+
+
+        # We preserve the existing project's behaviour of
+
+
+
+        # using the same number of channels.
+
+
+
+        #
+
+
+
+        # We also record the actual channel names.
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        if (
+
+
+
+            reference_channel_names is not None
+
+
+
+            and
+
+
+
+            channel_names
+
+
+
+            != reference_channel_names
+
+
+
+        ):
+
+
+
+            print(
+
+
+
+                "  WARNING: channel names/order "
+
+
+
+                "differ from the first valid EDF."
+
+
+
+            )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Per-channel z-score normalization
+
+
+
+        #
+
+
+
+        # This is unchanged from your existing pipeline.
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        channel_mean = data.mean(
+
+
+
+            axis=1,
+
+
+
+            keepdims=True
+
+
+
+        )
+
+
+
+        channel_std = data.std(
+
+
+
+            axis=1,
+
+
+
+            keepdims=True
+
+
+
+        )
+
+
+
+        data = (
+
+
+
+            data - channel_mean
+
+
+
+        ) / (
+
+
+
+            channel_std + 1e-8
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Read seizure annotations
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        seizure_times = (
+
+
+
+            parse_seizures_for_file(
+
+
+
+                SUMMARY_FILE,
+
+
+
+                edf_file.name
+
+
+
+            )
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Create windows
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        (
+
+
+
+            windows,
+
+
+
+            labels,
+
+
+
+            start_times,
+
+
+
+            end_times,
+
+
+
+            window_indices
+
+
+
+        ) = make_windows(
+
+
+
+            data,
+
+
+
+            sfreq,
+
+
+
+            WINDOW_SEC,
+
+
+
+            WINDOW_OVERLAP,
+
+
+
+            seizure_times
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Save per-file temporary data
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        w_path = (
+
+
+
+            TMP_DIR
+
+
+
+            / f"{edf_file.stem}_windows.npy"
+
+
+
+        )
+
+
+
+        l_path = (
+
+
+
+            TMP_DIR
+
+
+
+            / f"{edf_file.stem}_labels.npy"
+
+
+
+        )
+
+
+
+        s_path = (
+
+
+
+            TMP_DIR
+
+
+
+            / f"{edf_file.stem}_start_times.npy"
+
+
+
+        )
+
+
+
+        e_path = (
+
+
+
+            TMP_DIR
+
+
+
+            / f"{edf_file.stem}_end_times.npy"
+
+
+
+        )
+
+
+
+        wi_path = (
+
+
+
+            TMP_DIR
+
+
+
+            / f"{edf_file.stem}_window_indices.npy"
+
+
+
+        )
+
+
+
+        # Save arrays
+
+
+
+        np.save(
+
+
+
+            w_path,
+
+
+
+            windows
+
+
+
+        )
+
+
+
+        np.save(
+
+
+
+            l_path,
+
+
+
+            labels
+
+
+
+        )
+
+
+
+        np.save(
+
+
+
+            s_path,
+
+
+
+            start_times
+
+
+
+        )
+
+
+
+        np.save(
+
+
+
+            e_path,
+
+
+
+            end_times
+
+
+
+        )
+
+
+
+        np.save(
+
+
+
+            wi_path,
+
+
+
+            window_indices
+
+
+
+        )
+
+
+
+        # Record successful file
+
+
+
+        saved_chunks.append(
+
+
+
+            edf_file.stem
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Print file summary
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        n_seizure = int(
+
+
+
+            labels.sum()
+
+
+
+        )
+
+
+
+        file_type = (
+
+
+
+            "seizure file"
+
+
+
+            if seizure_times
+
+
+
+            else "clean file"
+
+
+
+        )
+
+
+
+        print(
+
+
+
+            f"  {len(windows)} windows, "
+
+
+
+            f"{n_seizure} seizure "
+
+
+
+            f"({file_type})"
+
+
+
+        )
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        # Free memory before next EDF
+
+
+
+        # ---------------------------------------------------------
+
+
+
+        del raw
+
+
+
+        del data
+
+
+
+        del windows
+
+
+
+        del labels
+
+
+
+        del start_times
+
+
+
+        del end_times
+
+
+
+        del window_indices
+
+
+
         gc.collect()
 
-    final_windows.flush()
-    np.save(final_labels_path, final_labels)
-    np.save(final_file_ids_path, final_file_ids)
-
-    # Persist file list and standardized electrode channel labels
-    with open(OUT_DIR / f"{SUBJECT}_file_names.txt", "w") as f:
-        f.write("\n".join(saved_chunks))
-
-    if reference_channel_names is not None:
-        with open(final_channel_names_path, "w") as f:
-            f.write("\n".join(reference_channel_names))
-
-    # Persist structured tabular metadata for reproducible train/val/test partitioning
-    pd.DataFrame(metadata_rows).to_csv(final_metadata_path, index=False)
-    shutil.rmtree(TMP_DIR)
-
-    print("\n" + "=" * 60)
-    print(f"PREPROCESSING COMPLETE - {SUBJECT}")
-    print("=" * 60)
-    print(f"Files processed: {len(saved_chunks)} / {len(edf_files)}")
-    if skipped:
-        print(f"Files skipped: {skipped}")
-    print(f"Total windows: {total_windows:,} | Seizure windows: {final_labels.sum():,} ({100*final_labels.mean():.2f}%)")
-    print(f"Saved: {final_windows_path}")
-    print(f"Saved: {final_labels_path}")
-    print(f"Saved: {final_metadata_path}")
 
 
-if __name__ == "__main__":
-    main()
+    except Exception as e:
+
+
+
+        print(
+
+
+
+            f"  SKIPPED "
+
+
+
+            f"(error: {e})"
+
+
+
+        )
+
+
+
+        skipped.append(
+
+
+
+            edf_file.name
+
+
+
+        )
+
+
+
+        # Make sure memory is released
+
+
+
+        gc.collect()
+
+
+
+# =====================================================================
+
+
+
+# 7. Check that at least one file was processed
+
+
+
+# =====================================================================
+
+
+
+if not saved_chunks:
+
+
+
+    print(
+
+
+
+        "\nERROR: No EDF files were "
+
+
+
+        "successfully processed."
+
+
+
+    )
+
+
+
+    shutil.rmtree(
+
+
+
+        TMP_DIR,
+
+
+
+        ignore_errors=True
+
+
+
+    )
+
+
+
+    sys.exit(1)
+
+
+
+# =====================================================================
+
+
+
+# 8. Combine all per-file chunks
+
+
+
+# =====================================================================
+
+
+
+print(
+
+
+
+    f"\nCombining "
+
+
+
+    f"{len(saved_chunks)} saved chunks..."
+
+
+
+)
+
+
+
+total_windows = 0
+
+
+
+sample_shape = None
+
+
+
+# -------------------------------------------------------------
+
+
+
+# First pass:
+
+
+
+# determine total number of windows
+
+
+
+# -------------------------------------------------------------
+
+
+
+for stem in saved_chunks:
+
+
+
+    w = np.load(
+
+
+
+        TMP_DIR
+
+
+
+        / f"{stem}_windows.npy",
+
+
+
+        mmap_mode="r"
+
+
+
+    )
+
+
+
+    total_windows += (
+
+
+
+        w.shape[0]
+
+
+
+    )
+
+
+
+    if sample_shape is None:
+
+
+
+        sample_shape = (
+
+
+
+            w.shape[1:]
+
+
+
+        )
+
+
+
+    del w
+
+
+
+# =====================================================================
+
+
+
+# 9. Create output directory
+
+
+
+# =====================================================================
+
+
+
+OUT_DIR = Path(
+
+
+
+    "data/processed"
+
+
+
+)
+
+
+
+OUT_DIR.mkdir(
+
+
+
+    parents=True,
+
+
+
+    exist_ok=True
+
+
+
+)
+
+
+
+# =====================================================================
+
+
+
+# 10. Define final output paths
+
+
+
+# =====================================================================
+
+
+
+final_windows_path = (
+
+
+
+    OUT_DIR
+
+
+
+    / f"{SUBJECT}_windows.npy"
+
+
+
+)
+
+
+
+final_labels_path = (
+
+
+
+    OUT_DIR
+
+
+
+    / f"{SUBJECT}_labels.npy"
+
+
+
+)
+
+
+
+final_file_ids_path = (
+
+
+
+    OUT_DIR
+
+
+
+    / f"{SUBJECT}_file_ids.npy"
+
+
+
+)
+
+
+
+final_file_names_path = (
+
+
+
+    OUT_DIR
+
+
+
+    / f"{SUBJECT}_file_names.txt"
+
+
+
+)
+
+
+
+final_metadata_path = (
+
+
+
+    OUT_DIR
+
+
+
+    / f"{SUBJECT}_metadata.csv"
+
+
+
+)
+
+
+
+final_channel_names_path = (
+
+
+
+    OUT_DIR
+
+
+
+    / f"{SUBJECT}_channel_names.txt"
+
+
+
+)
+
+
+
+# =====================================================================
+
+
+
+# 11. Create memory-mapped final window array
+
+
+
+# =====================================================================
+
+
+
+final_windows = np.lib.format.open_memmap(
+
+
+
+    final_windows_path,
+
+
+
+    mode="w+",
+
+
+
+    dtype=np.float32,
+
+
+
+    shape=(
+
+
+
+        total_windows,
+
+
+
+        *sample_shape
+
+
+
+    )
+
+
+
+)
+
+
+
+# Labels can comfortably stay in RAM
+
+
+
+final_labels = np.zeros(
+
+
+
+    total_windows,
+
+
+
+    dtype=np.int8
+
+
+
+)
+
+
+
+# File IDs
+
+
+
+final_file_ids = np.zeros(
+
+
+
+    total_windows,
+
+
+
+    dtype=np.int32
+
+
+
+)
+
+
+
+# =====================================================================
+
+
+
+# 12. Combine files + create metadata
+
+
+
+# =====================================================================
+
+
+
+offset = 0
+
+
+
+metadata_rows = []
+
+
+
+for file_idx, stem in enumerate(
+
+
+
+    saved_chunks
+
+
+
+):
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    # Load per-file arrays
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    w = np.load(
+
+
+
+        TMP_DIR
+
+
+
+        / f"{stem}_windows.npy"
+
+
+
+    )
+
+
+
+    l = np.load(
+
+
+
+        TMP_DIR
+
+
+
+        / f"{stem}_labels.npy"
+
+
+
+    )
+
+
+
+    start_times = np.load(
+
+
+
+        TMP_DIR
+
+
+
+        / f"{stem}_start_times.npy"
+
+
+
+    )
+
+
+
+    end_times = np.load(
+
+
+
+        TMP_DIR
+
+
+
+        / f"{stem}_end_times.npy"
+
+
+
+    )
+
+
+
+    window_indices = np.load(
+
+
+
+        TMP_DIR
+
+
+
+        / f"{stem}_window_indices.npy"
+
+
+
+    )
+
+
+
+    n = w.shape[0]
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    # Copy EEG windows
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    final_windows[
+
+
+
+        offset:offset + n
+
+
+
+    ] = w
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    # Copy labels
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    final_labels[
+
+
+
+        offset:offset + n
+
+
+
+    ] = l
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    # Assign file ID
+
+
+
+    #
+
+
+
+    # Every window from this EDF receives the same file ID.
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    final_file_ids[
+
+
+
+        offset:offset + n
+
+
+
+    ] = file_idx
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    # Create metadata
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    for j in range(n):
+
+
+
+        metadata_rows.append({
+
+
+
+            "dataset_id": "chbmit",
+
+
+
+            "subject_id": SUBJECT,
+
+
+
+            "edf_id": stem,
+
+
+
+            "window_index": int(
+
+
+
+                window_indices[j]
+
+
+
+            ),
+
+
+
+            "start_sec": float(
+
+
+
+                start_times[j]
+
+
+
+            ),
+
+
+
+            "end_sec": float(
+
+
+
+                end_times[j]
+
+
+
+            ),
+
+
+
+            "label": int(
+
+
+
+                l[j]
+
+
+
+            ),
+
+
+
+            "sampling_rate": float(
+
+
+
+                sfreq
+
+
+
+            ),
+
+
+
+            "n_channels": int(
+
+
+
+                w.shape[1]
+
+
+
+            ),
+
+
+
+            "n_samples": int(
+
+
+
+                w.shape[2]
+
+
+
+            )
+
+
+
+        })
+
+
+
+    offset += n
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    # Release memory
+
+
+
+    # -------------------------------------------------------------
+
+
+
+    del w
+
+
+
+    del l
+
+
+
+    del start_times
+
+
+
+    del end_times
+
+
+
+    del window_indices
+
+
+
+    gc.collect()
+
+
+
+# =====================================================================
+
+
+
+# 13. Flush final window array
+
+
+
+# =====================================================================
+
+
+
+final_windows.flush()
+
+
+
+# =====================================================================
+
+
+
+# 14. Save labels and file IDs
+
+
+
+# =====================================================================
+
+
+
+np.save(
+
+
+
+    final_labels_path,
+
+
+
+    final_labels
+
+
+
+)
+
+
+
+np.save(
+
+
+
+    final_file_ids_path,
+
+
+
+    final_file_ids
+
+
+
+)
+
+
+
+# =====================================================================
+
+
+
+# 15. Save EDF file names
+
+
+
+# =====================================================================
+
+
+
+with open(
+
+
+
+    final_file_names_path,
+
+
+
+    "w"
+
+
+
+) as f:
+
+
+
+    f.write(
+
+
+
+        "\n".join(
+
+
+
+            saved_chunks
+
+
+
+        )
+
+
+
+    )
+
+
+
+# =====================================================================
+
+
+
+# 16. Save channel names
+
+
+
+# =====================================================================
+
+
+
+if reference_channel_names is not None:
+
+
+
+    with open(
+
+
+
+        final_channel_names_path,
+
+
+
+        "w"
+
+
+
+    ) as f:
+
+
+
+        for channel_name in (
+
+
+
+            reference_channel_names
+
+
+
+        ):
+
+
+
+            f.write(
+
+
+
+                channel_name
+
+
+
+                + "\n"
+
+
+
+            )
+
+
+
+# =====================================================================
+
+
+
+# 17. Save metadata CSV
+
+
+
+# =====================================================================
+
+
+
+metadata_df = pd.DataFrame(
+
+
+
+    metadata_rows
+
+
+
+)
+
+
+
+metadata_df.to_csv(
+
+
+
+    final_metadata_path,
+
+
+
+    index=False
+
+
+
+)
+
+
+
+# =====================================================================
+
+
+
+# 18. Clean up temporary files
+
+
+
+# =====================================================================
+
+
+
+shutil.rmtree(
+
+
+
+    TMP_DIR
+
+
+
+)
+
+
+
+# =====================================================================
+
+
+
+# 19. Final summary
+
+
+
+# =====================================================================
+
+
+
+print(
+
+
+
+    "\n"
+
+
+
+    + "=" * 60
+
+
+
+)
+
+
+
+print(
+
+
+
+    f"SUMMARY - {SUBJECT}"
+
+
+
+)
+
+
+
+print(
+
+
+
+    "=" * 60
+
+
+
+)
+
+
+
+print(
+
+
+
+    f"Files processed: "
+
+
+
+    f"{len(saved_chunks)} / "
+
+
+
+    f"{len(edf_files)}"
+
+
+
+)
+
+
+
+if skipped:
+
+
+
+    print(
+
+
+
+        f"Files skipped: "
+
+
+
+        f"{skipped}"
+
+
+
+    )
+
+
+
+print(
+
+
+
+    f"Total windows: "
+
+
+
+    f"{total_windows}"
+
+
+
+)
+
+
+
+print(
+
+
+
+    f"Seizure windows: "
+
+
+
+    f"{final_labels.sum()} / "
+
+
+
+    f"{total_windows} "
+
+
+
+    f"({100 * final_labels.mean():.2f}%)"
+
+
+
+)
+
+
+
+print(
+
+
+
+    f"\nSaved windows to:"
+
+
+
+    f"\n{final_windows_path}"
+
+
+
+)
+
+
+
+print(
+
+
+
+    f"\nSaved labels to:"
+
+
+
+    f"\n{final_labels_path}"
+
+
+
+)
+
+
+
+print(
+
+
+
+    f"\nSaved file IDs to:"
+
+
+
+    f"\n{final_file_ids_path}"
+
+
+
+)
+
+
+
+print(
+
+
+
+    f"\nSaved file names to:"
+
+
+
+    f"\n{final_file_names_path}"
+
+
+
+)
+
+
+
+print(
+
+
+
+    f"\nSaved channel names to:"
+
+
+
+    f"\n{final_channel_names_path}"
+
+
+
+)
+
+
+
+print(
+
+
+
+    f"\nSaved metadata to:"
+
+
+
+    f"\n{final_metadata_path}"
+
+
+
+)
+
+
+
+print(
+
+
+
+    "\nPreprocessing completed successfully."
+
+
+
+)

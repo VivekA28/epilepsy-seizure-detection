@@ -4,20 +4,40 @@
   "dataset": "CHB-MIT",
   "train": [
     "chb01",
-    "chb02",
-    "chb03"
+    "chb03",
+    "chb04",
+    "chb06",
+    "chb09",
+    "chb10",
+    "chb11",
+    "chb12",
+    "chb14",
+    "chb15"
   ],
   "validation": [
-    "chb04"
+    "chb07",
+    "chb08"
   ],
   "test": [
-    "chb05"
+    "chb02",
+    "chb05",
+    "chb13"
   ],
   "all_subjects": [
     "chb01",
-    "chb02",
     "chb03",
     "chb04",
-    "chb05"
+    "chb06",
+    "chb09",
+    "chb10",
+    "chb11",
+    "chb12",
+    "chb14",
+    "chb15",
+    "chb07",
+    "chb08",
+    "chb02",
+    "chb05",
+    "chb13"
   ]
 }

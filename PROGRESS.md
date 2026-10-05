@@ -96,7 +96,7 @@ Rules:
 - [x] No checkpoint selection using test performance in all new experiments.
 - [x] New experiments select the best checkpoint using validation F1.
 - [x] New experiments evaluate the test set once after model selection.
-- [ ] For the final expanded experiment, use **subject-level separation** so all recordings from a subject remain in exactly one partition.
+- [x] For the final expanded experiment, use **subject-level separation** so all recordings from a subject remain in exactly one partition.
 - [ ] No sequence may cross a subject boundary, EDF boundary, or train/validation/test boundary.
 
 The expected direction is that subject-independent evaluation may be harder than the current file-level baseline. **Do not assume or document a specific future F1 drop before measuring it.**
@@ -394,7 +394,7 @@ Start with LayerNorm without adding arbitrary dimensionality reduction. A projec
 
 Supervisor requirement:
 
-- [ ] Process substantially more CHB-MIT data.
+- [x] Process substantially more CHB-MIT data.
 - [ ] Add at least one additional EEG seizure dataset.
 
 ### Candidate second dataset: Siena Scalp EEG Database
@@ -672,7 +672,7 @@ Interpretation for development only:
 - [ ] More CHB-MIT subjects.
 - [ ] Complete/record formal standalone FFT validation and spectrum inspection.
 - [ ] Integrate and harmonize a second EEG dataset.
-- [ ] Build the final subject-level train/validation/test split.
+- [x] Build the final subject-level train/validation/test split.
 - [ ] Run larger experiments on the university GPU.
 - [ ] Fine-tune CNN + LSTM end-to-end.
 - [ ] Fine-tune CNN + FFT + LSTM end-to-end.
@@ -723,9 +723,9 @@ Interpretation for development only:
 
 ## Step 7 — Expand data
 
-- [ ] Process more CHB-MIT subjects.
+- [x] Process more CHB-MIT subjects.
 - [ ] Integrate and harmonize Siena or another suitable dataset.
-- [ ] Implement subject-level train/validation/test split.
+- [x] Implement subject-level train/validation/test split.
 
 ## Step 8 — University GPU
 
@@ -762,7 +762,7 @@ Interpretation for development only:
 
 # 16. Current Status in One Line
 
-**Baseline CNN + SHAP/LIME is complete; corrected validation-based CNN evaluation, frozen-CNN + LSTM, CNN + FFT, and frozen-feature CNN + FFT + LSTM local development experiments are complete on chb01–chb05. Next major work is expanded data, subject-independent evaluation, end-to-end GPU fine-tuning, event-level metrics, and final explainability.**
+**Baseline CNN + SHAP/LIME is complete; corrected validation-based CNN evaluation, frozen-CNN + LSTM, CNN + FFT, and frozen-feature CNN + FFT + LSTM local development experiments are complete on chb01–chb05. CHB-MIT is now expanded to chb01–chb15 and a subject-level train/validation/test split is in place and verified. Next major work is end-to-end GPU fine-tuning, event-level metrics, second-dataset integration, final explainability, and report finalization.**
 
 ---
 

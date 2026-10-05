@@ -563,22 +563,28 @@ def create_subject_split(
 
 
 if __name__ == "__main__":
-    # TEMPORARY SANITY-CHECK SPLIT ONLY.
-    # This is NOT the final experimental split. Replace it after the
-    # expanded subject set is available.
-
     TRAIN_SUBJECTS = [
         "chb01",
-        "chb02",
         "chb03",
+        "chb04",
+        "chb06",
+        "chb09",
+        "chb10",
+        "chb11",
+        "chb12",
+        "chb14",
+        "chb15",
     ]
 
     VAL_SUBJECTS = [
-        "chb04",
+        "chb07",
+        "chb08",
     ]
 
     TEST_SUBJECTS = [
+        "chb02",
         "chb05",
+        "chb13",
     ]
 
     create_subject_split(
@@ -586,3 +592,4 @@ if __name__ == "__main__":
         VAL_SUBJECTS,
         TEST_SUBJECTS,
     )
+

@@ -1,0 +1,5 @@
+subject_id,edf_id,true_event_id,start_sec,end_sec
+chb01,chb01_15,0,1732.0,1772.0
+chb01,chb01_18,0,1720.0,1810.0
+chb03,chb03_34,0,1982.0,2029.0
+chb05,chb05_22,0,2348.0,2465.0

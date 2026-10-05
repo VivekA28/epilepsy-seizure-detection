@@ -1,0 +1,13 @@
+subject_id,edf_id,pred_event_id,true_event_id,classification,detection_sec,true_onset_sec,true_end_sec,latency_sec,overlap_sec
+chb01,chb01_15,0,0.0,detected,1736.0,1732.0,1772.0,4.0,16.0
+chb01,chb01_15,1,0.0,duplicate_ictal,1758.0,1732.0,1772.0,,18.0
+chb01,chb01_15,2,,false_alarm,1798.0,,,,0.0
+chb01,chb01_18,3,0.0,detected,1724.0,1720.0,1810.0,4.0,90.0
+chb01,chb01_42,4,,false_alarm,1926.0,,,,0.0
+chb02,chb02_26,5,,false_alarm,1366.0,,,,0.0
+chb03,chb03_28,6,,false_alarm,1662.0,,,,0.0
+chb03,chb03_34,7,0.0,detected,1984.0,1982.0,2029.0,2.0,8.0
+chb03,chb03_34,8,0.0,duplicate_ictal,2004.0,1982.0,2029.0,,10.0
+chb03,chb03_34,9,0.0,duplicate_ictal,2020.0,1982.0,2029.0,,13.0
+chb04,chb04_06,10,,false_alarm,3068.0,,,,0.0
+chb05,chb05_22,11,0.0,detected,2362.0,2348.0,2465.0,14.0,107.0

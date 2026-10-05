@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "split_type": "subject_level",
+  "dataset": "CHB-MIT",
+  "train": [
+    "chb01",
+    "chb02",
+    "chb03"
+  ],
+  "validation": [
+    "chb04"
+  ],
+  "test": [
+    "chb05"
+  ],
+  "all_subjects": [
+    "chb01",
+    "chb02",
+    "chb03",
+    "chb04",
+    "chb05"
+  ]
+}

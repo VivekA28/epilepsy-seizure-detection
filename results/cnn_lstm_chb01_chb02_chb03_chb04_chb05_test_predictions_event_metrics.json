@@ -1,0 +1,12 @@
+{
+  "total_true_events": 4,
+  "detected_true_events": 4,
+  "event_sensitivity": 1.0,
+  "predicted_events": 12,
+  "duplicate_ictal_events": 3,
+  "false_alarm_events": 5,
+  "evaluated_non_seizure_hours": 30.862777777777772,
+  "false_alarms_per_hour": 0.1620074523428078,
+  "mean_detection_latency_sec": 6.0,
+  "median_detection_latency_sec": 4.0
+}

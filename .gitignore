@@ -10,3 +10,4 @@ venv/
 .venv/
 *.pyc
 .DS_Store
+backups/

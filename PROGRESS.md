@@ -772,3 +772,158 @@ Interpretation for development only:
 - Current work should remain controlled and incremental rather than adding unnecessary architecture complexity.
 - Keep experiments reproducible: fixed seeds, recorded split assignments, recorded preprocessing parameters, and saved validation/test results.
 - Any architectural change should be recorded with its reason and compared against the relevant baseline.
+
+---
+
+# 2026-10-06 — Critical Finding: Channel Order Mismatch
+
+## Confirmed issue
+
+A channel audit identified a deterministic channel-order mismatch affecting:
+
+- CHB12
+- CHB13
+- CHB14
+- CHB15
+
+The affected processed arrays contain the same 23 channels but do not use the canonical CHB01–CHB11 channel order.
+
+Indices **8–17** are permuted:
+
+```text
+Canonical:
+8–11   FP2-F4, F4-C4, C4-P4, P4-O2
+12–15  FP2-F8, F8-T8, T8-P8, P8-O2
+16–17  FZ-CZ, CZ-PZ
+```
+
+Current CHB12–CHB15:
+
+```text
+8–9    FZ-CZ, CZ-PZ
+10–17  FP2-F4, F4-C4, C4-P4, P4-O2,
+       FP2-F8, F8-T8, T8-P8, P8-O2
+```
+
+Thus 10/23 channel positions have different semantics from the canonical order.
+
+## Exact correction
+
+```python
+permutation = [
+    0, 1, 2, 3,
+    4, 5, 6, 7,
+    10, 11, 12, 13,
+    14, 15, 16, 17,
+    8, 9,
+    18, 19, 20, 21, 22
+]
+```
+
+For `(N, 23, 512)` windows:
+
+```python
+corrected_windows = windows[:, permutation, :]
+```
+
+The correction is a lossless channel-axis permutation because the audited preprocessing operations are channel-independent.
+
+## Important qualification
+
+The mismatch is a confirmed data-pipeline defect.
+
+It is **not yet proven that it is the sole cause** of the poor subject-wise CNN result.
+
+Latest reported subject-wise result:
+
+```text
+Precision : 0.4286
+Recall    : 0.0245
+F1-score  : 0.0464
+ROC-AUC   : 0.3995
+PR-AUC    : 0.0212
+```
+
+The correction must therefore be tested experimentally rather than assumed to solve the entire problem.
+
+## Next controlled experiment
+
+Only channel order will change.
+
+Keep the following fixed:
+
+- CNN architecture
+- subject split
+- random seed
+- optimizer
+- learning rate
+- batch size
+- loss
+- sampler
+- checkpoint criterion
+- evaluation protocol
+
+### Steps
+
+1. Back up `data/processed`.
+2. Reorder CHB12–CHB15 using the fixed permutation.
+3. Update their channel-name metadata.
+4. Validate exact channel names at every index.
+5. Re-run data validation.
+6. Confirm labels, metadata, window counts and seizure counts are unchanged.
+7. Regenerate derived CNN/FFT features.
+8. Retrain the exact same CNN.
+9. Compare the result against the current baseline.
+
+## Rules
+
+Do not:
+
+- flip probabilities
+- rescue the test result through test-threshold tuning
+- use the test set for checkpoint selection
+- change several model/training components at once
+- train LSTM/FFT before the corrected CNN baseline is established
+
+## Status
+
+- [x] Channel mismatch identified
+- [x] Affected subjects identified
+- [x] Exact permutation determined
+- [x] Lossless correction strategy established
+- [x] Back up processed data
+- [x] Implement correction
+- [x] Validate semantic channel order
+- [x] Rebuild derived features
+- [x] Retrain baseline (Model 1: Baseline CNN on 15 subjects)
+- [x] Train Model 2 (CNN + FFT on 15 subjects)
+- [x] Train Model 3 (CNN + LSTM on 15 subjects)
+- [x] Train Model 4 (CNN + FFT + LSTM on 15 subjects)
+
+---
+
+# 12. 15-Subject Controlled Benchmark Results
+
+### Split Configuration (Zero Leakage)
+- **Train (10 subjects)**: `chb01, chb03, chb04, chb06, chb09, chb10, chb11, chb12, chb14, chb15` (731,103 windows / 3,005 seizure)
+- **Validation (2 subjects)**: `chb07, chb08` (156,665 windows / 634 seizure)
+- **Test (3 subjects)**: `chb02, chb05, chb13` (153,398 windows / 611 seizure)
+
+### Four-Model Matrix (Evaluated on Unseen Held-Out Test Subjects, Threshold = 0.5)
+
+| Metric | Model 1: Baseline CNN | Model 2: CNN + FFT | Model 3: CNN + LSTM | Model 4: CNN + FFT + LSTM |
+| :--- | :--- | :--- | :--- | :--- |
+| **Best Val Epoch** | Epoch 3 | Epoch 11 | Epoch 4 | Epoch 11 |
+| **Best Val F1** | 0.2539 | **0.3360** | 0.2419 | 0.3100 |
+| **Test Precision** | 0.2812 | 0.0045 | **0.4615** | 0.0038 |
+| **Test Recall** | 0.0442 | 0.0622 | 0.0196 | **0.1980** |
+| **Test F1** | **0.0764** | 0.0084 | 0.0377 | 0.0075 |
+| **Test ROC-AUC** | ~0.40 | — | 0.2062 | 0.4015 |
+| **Test PR-AUC** | ~0.02 | — | 0.0202 | 0.0133 |
+| **True Positives (TP)** | 27 | 38 | 12 | **121** |
+| **False Positives (FP)** | 69 | 8,356 | **14** | 31,739 |
+| **False Negatives (FN)**| 584 | 573 | 599 | **490** |
+| **True Negatives (TN)** | 152,718 | 144,431 | 152,429 | 120,704 |
+| **Total Test Positives**| 611 | 611 | 611 | 611 |
+
+

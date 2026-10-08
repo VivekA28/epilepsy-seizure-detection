@@ -12,7 +12,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import classification_report, confusion_matrix, f1_score
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    roc_auc_score,
+    average_precision_score,
+)
 
 import torch
 import torch.nn as nn
@@ -23,6 +29,8 @@ DATA_DIR = Path("data/processed")
 PARTITION_DIR = Path("data/partitions")
 MODEL_DIR = Path("models")
 MODEL_DIR.mkdir(exist_ok=True)
+RESULTS_DIR = Path("results")
+RESULTS_DIR.mkdir(exist_ok=True)
 
 PARTITIONS = {
     "train": PARTITION_DIR / "train_metadata.csv",
@@ -218,16 +226,18 @@ class SeizureCNN(nn.Module):
 
 def predict(model, loader, device):
     model.eval()
-    preds, targets = [], []
+    preds, targets, probs = [], [], []
 
     with torch.no_grad():
         for x, y in loader:
             x = x.to(device, non_blocking=PIN_MEMORY)
-            p = (torch.sigmoid(model(x).squeeze(-1)) > 0.5).int()
+            prob = torch.sigmoid(model(x).squeeze(-1))
+            p = (prob > 0.5).int()
+            probs.append(prob.cpu().numpy().astype(np.float32))
             preds.append(p.cpu().numpy())
             targets.append(y.numpy().astype(np.int64))
 
-    return np.concatenate(preds), np.concatenate(targets)
+    return np.concatenate(preds), np.concatenate(targets), np.concatenate(probs)
 
 
 def main():
@@ -345,7 +355,7 @@ def main():
 
             total_loss += loss.item() * x.size(0)
 
-        val_preds, val_targets = predict(model, val_loader, device)
+        val_preds, val_targets, _ = predict(model, val_loader, device)
         val_f1 = f1_score(val_targets, val_preds, zero_division=0)
         avg_loss = total_loss / len(train_ds)
 
@@ -372,8 +382,27 @@ def main():
         f"(validation F1={best_val_f1:.3f})"
     )
 
-    print("\nFinal TEST evaluation...")
-    test_preds, test_targets = predict(model, test_loader, device)
+    print("\nEvaluating selected checkpoint on VALIDATION set...")
+    val_preds, val_targets, val_probs = predict(model, val_loader, device)
+    val_f1_selected = f1_score(val_targets, val_preds, zero_division=0)
+    val_roc_auc = roc_auc_score(val_targets, val_probs)
+    val_pr_auc = average_precision_score(val_targets, val_probs)
+
+    print("\n" + "=" * 90)
+    print("SELECTED CHECKPOINT VALIDATION METRICS")
+    print("=" * 90)
+    print(f"Validation samples      : {len(val_targets):,}")
+    print(f"Validation positives    : {int(val_targets.sum()):,}")
+    print(f"Validation F1 (@ 0.5)   : {val_f1_selected:.4f}")
+    print(f"Validation ROC-AUC      : {val_roc_auc:.4f}")
+    print(f"Validation PR-AUC       : {val_pr_auc:.4f}")
+
+    val_probs_path = RESULTS_DIR / "baseline_cnn_subjectwise_validation_probs.npz"
+    np.savez_compressed(val_probs_path, y_true=val_targets, y_prob=val_probs)
+    print(f"Saved validation continuous probabilities to: {val_probs_path}")
+
+    print("\nFinal TEST evaluation (running test inference forward exactly once)...")
+    test_preds, test_targets, test_probs = predict(model, test_loader, device)
 
     print("\n" + "=" * 90)
     print("FINAL SUBJECT-INDEPENDENT TEST RESULTS")
@@ -388,6 +417,10 @@ def main():
     )
     print("Confusion matrix:")
     print(confusion_matrix(test_targets, test_preds))
+
+    test_probs_path = RESULTS_DIR / "baseline_cnn_subjectwise_test_probs.npz"
+    np.savez_compressed(test_probs_path, y_true=test_targets, y_prob=test_probs)
+    print(f"Saved test continuous probabilities to: {test_probs_path}")
 
     path = MODEL_DIR / "baseline_cnn_subjectwise_15subjects.pt"
     torch.save(

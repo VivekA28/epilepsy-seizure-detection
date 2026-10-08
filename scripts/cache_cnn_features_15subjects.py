@@ -1,5 +1,6 @@
 """Cache 128-D CNN features for all 15 subjects using the corrected baseline CNN."""
 
+import sys
 import time
 from pathlib import Path
 
@@ -142,14 +143,22 @@ def main():
     total_time = 0.0
     t_start = time.time()
 
-    for subject in ALL_SUBJECTS:
+    if len(sys.argv) > 1:
+        subjects = sys.argv[1:]
+        for sub in subjects:
+            if sub not in ALL_SUBJECTS:
+                raise ValueError(f"Invalid subject '{sub}'. Must be one of {ALL_SUBJECTS}")
+    else:
+        subjects = ALL_SUBJECTS
+
+    for subject in subjects:
         t0 = time.time()
         cache_subject(subject, model, device)
         total_time += time.time() - t0
 
     total_elapsed = time.time() - t_start
     print("=" * 80)
-    print(f"Feature caching complete for all {len(ALL_SUBJECTS)} subjects in {total_elapsed:.1f}s")
+    print(f"Feature caching complete for {len(subjects)} subjects in {total_elapsed:.1f}s")
     print("=" * 80)
 
 

@@ -1,0 +1,30 @@
+====================================================================================================
+STARTING MULTI-SEED BENCHMARK CHAIN: SEEDS 43 -> 44 -> 42 (LSTMs) -> CNN+FFT (43/44)
+====================================================================================================
+
+####################################################################################################
+CHAIN 1/4: SEED 43 PIPELINE
+####################################################################################################
+==========================================================================================
+SUBJECT-WISE BASELINE CNN
+==========================================================================================
+Train      : chb01, chb03, chb04, chb06, chb09, chb10, chb11, chb12, chb14, chb15 | 731,103 windows | 3,005 seizure
+Validation : chb07, chb08 | 156,665 windows | 634 seizure
+Test       : chb02, chb05, chb13 | 153,398 windows | 611 seizure
+
+Checking partition <-> processed-data alignment...
+✅ Partition metadata matches processed subject metadata.
+
+[BASELINE CNN | SEED 43] Training on cuda (Epochs=15, LR=0.001)
+  Epoch 01/15 | loss=0.0411 | val PR-AUC=0.1526 | val ROC-AUC=0.7834 -> [BEST]
+  Epoch 02/15 | loss=0.0151 | val PR-AUC=0.1430 | val ROC-AUC=0.7499
+  Epoch 03/15 | loss=0.0103 | val PR-AUC=0.1935 | val ROC-AUC=0.7862 -> [BEST]
+  Epoch 04/15 | loss=0.0077 | val PR-AUC=0.1578 | val ROC-AUC=0.7625
+  Epoch 05/15 | loss=0.0064 | val PR-AUC=0.2570 | val ROC-AUC=0.7462 -> [BEST]
+  Epoch 06/15 | loss=0.0058 | val PR-AUC=0.2288 | val ROC-AUC=0.7815
+  Epoch 07/15 | loss=0.0048 | val PR-AUC=0.2445 | val ROC-AUC=0.7087
+  Epoch 08/15 | loss=0.0042 | val PR-AUC=0.2420 | val ROC-AUC=0.7730
+  Epoch 09/15 | loss=0.0036 | val PR-AUC=0.2638 | val ROC-AUC=0.7288 -> [BEST]
+  Epoch 10/15 | loss=0.0034 | val PR-AUC=0.1686 | val ROC-AUC=0.6924
+  Epoch 11/15 | loss=0.0032 | val PR-AUC=0.2822 | val ROC-AUC=0.7709 -> [BEST]
+  Epoch 12/15 | loss=0.0029 | val PR-AUC=0.2407 | val ROC-AUC=0.5842

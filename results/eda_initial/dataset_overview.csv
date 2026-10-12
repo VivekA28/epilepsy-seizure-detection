@@ -1,0 +1,16 @@
+subject,split,total_windows,labels_count,metadata_rows,seizure_windows,non_seizure_windows,seizure_percentage,window_shape,channel_count,lengths_consistent,missing_files,status
+chb01,train,72951,72951,72951,230,72721,0.3153,"(72951, 23, 512)",23,True,None,OK
+chb02,test,63443,63443,63443,90,63353,0.1419,"(63443, 23, 512)",23,True,None,OK
+chb03,train,68365,68365,68365,210,68155,0.3072,"(68365, 23, 512)",23,True,None,OK
+chb04,train,40761,40761,40761,26,40735,0.0638,"(40761, 23, 512)",23,True,None,OK
+chb05,test,70166,70166,70166,287,69879,0.409,"(70166, 23, 512)",23,True,None,OK
+chb06,train,120104,120104,120104,93,120011,0.0774,"(120104, 23, 512)",23,True,None,OK
+chb07,validation,120674,120674,120674,167,120507,0.1384,"(120674, 23, 512)",23,True,None,OK
+chb08,validation,35991,35991,35991,467,35524,1.2975,"(35991, 23, 512)",23,True,None,OK
+chb09,train,122146,122146,122146,145,122001,0.1187,"(122146, 23, 512)",23,True,None,OK
+chb10,train,90016,90016,90016,235,89781,0.2611,"(90016, 23, 512)",23,True,None,OK
+chb11,train,62593,62593,62593,407,62186,0.6502,"(62593, 23, 512)",23,True,None,OK
+chb12,train,37216,37216,37216,536,36680,1.4402,"(37216, 23, 512)",23,True,None,OK
+chb13,test,19789,19789,19789,234,19555,1.1825,"(19789, 23, 512)",23,True,None,OK
+chb14,train,46774,46774,46774,98,46676,0.2095,"(46774, 23, 512)",23,True,None,OK
+chb15,train,70177,70177,70177,1025,69152,1.4606,"(70177, 23, 512)",23,True,None,OK

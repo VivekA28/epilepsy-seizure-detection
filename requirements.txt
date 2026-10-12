@@ -1,0 +1,17 @@
+# Core Deep Learning & Scientific Computing
+torch>=2.0.0
+numpy>=1.24.0,<3.0.0
+scipy>=1.10.0
+pandas>=2.0.0
+scikit-learn>=1.2.0
+
+# EEG Signal Processing & File Formats
+mne>=1.4.0
+pyEDFlib>=0.1.30
+
+# Model Explainability & Visualization
+shap>=0.42.0
+matplotlib>=3.7.0
+
+# Progress Tracking & Utilities
+tqdm>=4.65.0

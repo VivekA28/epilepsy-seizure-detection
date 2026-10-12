@@ -1,9 +1,8 @@
-data/
-models/
+data/raw/
+data/processed/
+data/partitions/
 *.edf
-*.pt
 *.h5
-.pth
 __pycache__/
 .ipynb_checkpoints/
 venv/
@@ -11,3 +10,4 @@ venv/
 *.pyc
 .DS_Store
 backups/
+Compress/
